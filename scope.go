@@ -570,7 +570,87 @@ func (scope *Scope) buildCondition(clause map[string]interface{}, include bool) 
 		var sqls []string
 		for key, value := range value {
 			if value != nil {
-				sqls = append(sqls, fmt.Sprintf("(%v.%v %s %v)", quotedTableName, scope.Quote(key), equalSQL, scope.AddToVars(value)))
+				/**
+				operators: not, equal, in, notin, gt, gte, lt, lte, range, like, startswith, endswith
+				split by __
+				*/
+				sps := strings.Split(key, "__")
+				lsps := len(sps)
+				mapStr := ""
+				switch lsps {
+				case 1:
+					sqls = append(sqls, fmt.Sprintf("(%v.%v %s %v)", quotedTableName, scope.Quote(key), equalSQL, scope.AddToVars(value)))
+				case 2:
+					realKey := sps[0]
+					op := sps[1]
+					switch op {
+					case "in", "notin":
+						values := reflect.ValueOf(value)
+						tempStrs := make([]string, 0)
+						existK := make(map[interface{}]struct{})
+						for i := 0; i < values.Len(); i++ {
+							vi := values.Index(i).Interface()
+							if _, ok := existK[vi]; ok{
+								continue
+							}
+							tempStrs = append(tempStrs, scope.AddToVars(vi))
+							existK[vi] = struct{}{}
+						}
+						if len(tempStrs) == 0{
+							tempStrs = append(tempStrs, scope.AddToVars(interface{}(-98765)))
+						}
+						ops := "IN"
+						if op == "notin"{
+							ops = "NOT IN"
+						}
+						tempStr := strings.Join(tempStrs, ",")
+						mapStr = fmt.Sprintf("(%v.%v %s (%s))", quotedTableName, scope.Quote(realKey), ops, tempStr)
+					case "equal", "gt", "gte", "lt", "lte":
+						realOp := ""
+						switch op {
+						case "gt":
+							realOp = ">"
+						case "gte":
+							realOp = ">="
+						case "lt":
+							realOp = "<"
+						case "lte":
+							realOp = "<="
+						default:
+							realOp = "="
+						}
+						mapStr = fmt.Sprintf("(%v.%v %s %v)", quotedTableName, scope.Quote(realKey), realOp, scope.AddToVars(value))
+					case "range":
+						values := reflect.ValueOf(value)
+						v0 := values.Index(0).Interface()
+						v1 := values.Index(1).Interface()
+						if v0 == nil || v1 == nil{
+							panic("range operator cant be nil")
+						}
+						mapStr = fmt.Sprintf("(%v.%v BETWEEN %v AND %v)", quotedTableName, scope.Quote(realKey),
+							scope.AddToVars(v0),
+							scope.AddToVars(v1),
+						)
+					case "like", "startswith", "endswith":
+						vis := value.(string)
+						switch op {
+						case "like":
+							vis = fmt.Sprintf("%%%s%%", vis)
+						case "startswith":
+							vis = fmt.Sprintf("%s%%", vis)
+						case "endswith":
+							vis = fmt.Sprintf("%%%s", vis)
+						}
+						mapStr = fmt.Sprintf("(%v.%v LIKE %v)", quotedTableName, scope.Quote(realKey),
+							scope.AddToVars(vis))
+					case "not":
+						mapStr = fmt.Sprintf("(%v.%v <> %v)", quotedTableName, scope.Quote(realKey),
+							scope.AddToVars(value))
+					default:
+						panic(fmt.Sprintf("filters operator:%s not implement", op))
+					}
+					sqls = append(sqls, mapStr)
+				}
 			} else {
 				if !include {
 					sqls = append(sqls, fmt.Sprintf("(%v.%v IS NOT NULL)", quotedTableName, scope.Quote(key)))
