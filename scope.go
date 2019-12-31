@@ -571,8 +571,13 @@ func (scope *Scope) buildCondition(clause map[string]interface{}, include bool) 
 		for key, value := range value {
 			if value != nil {
 				/**
-				operators: not, equal, in, notin, gt, gte, lt, lte, range, like, startswith, endswith
-				split by __
+				operators: not, equal, in, notin, gt, gte, lt, lte, range, contains, startswith, endswith, regexp
+				split by __ , e.g.
+				db.Where(map[string]interface{}{
+					"id__in": []int{1,2,3},
+					"username__contains": "tt",
+					"created_at__range": []string{"2019-12-31", "2020-01-01"},
+				})
 				*/
 				sps := strings.Split(key, "__")
 				lsps := len(sps)
@@ -631,10 +636,10 @@ func (scope *Scope) buildCondition(clause map[string]interface{}, include bool) 
 							scope.AddToVars(v0),
 							scope.AddToVars(v1),
 						)
-					case "like", "startswith", "endswith":
+					case "contains", "icontains", "startswith", "endswith":
 						vis := value.(string)
 						switch op {
-						case "like":
+						case "contains", "icontains":
 							vis = fmt.Sprintf("%%%s%%", vis)
 						case "startswith":
 							vis = fmt.Sprintf("%s%%", vis)
@@ -645,6 +650,9 @@ func (scope *Scope) buildCondition(clause map[string]interface{}, include bool) 
 							scope.AddToVars(vis))
 					case "not":
 						mapStr = fmt.Sprintf("(%v.%v <> %v)", quotedTableName, scope.Quote(realKey),
+							scope.AddToVars(value))
+					case "regexp":
+						mapStr = fmt.Sprintf("(%v.%v REGEXP %v)", quotedTableName, scope.Quote(realKey),
 							scope.AddToVars(value))
 					default:
 						panic(fmt.Sprintf("filters operator:%s not implement", op))

@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jinzhu/gorm"
 )
@@ -90,4 +91,22 @@ func TestDropTableWithTableOptions(t *testing.T) {
 	if err != nil {
 		t.Errorf("Table must be dropped, got error %s", err)
 	}
+}
+
+func TestWhereConditionBuilder(t *testing.T){
+	now := time.Now()
+	user1 := User{Name: "ScopeUser1", Age: 1, CreatedAt: now}
+	user2 := User{Name: "ScopeUser2", Age: 1, CreatedAt: now.Add(time.Hour*24*10)}
+	user3 := User{Name: "ScopeUser3", Age: 2, CreatedAt: now.Add(-time.Hour*24*10)}
+	DB.Save(&user1).Save(&user2).Save(&user3)
+
+	var dbModels []*User
+	result := DB.Where(map[string]interface{}{
+		"id__in": []int{2,3},
+		"id__not": 2,
+	}).Find(&dbModels)
+	if result.Error != nil || len(dbModels) != 1{
+		t.Error(result.Error)
+	}
+	t.Log(dbModels[0].Name)
 }
