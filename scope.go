@@ -630,16 +630,17 @@ func (scope *Scope) buildCondition(clause map[string]interface{}, include bool) 
 						v0 := values.Index(0).Interface()
 						v1 := values.Index(1).Interface()
 						if v0 == nil || v1 == nil{
-							panic("range operator cant be nil")
+							scope.Err(fmt.Errorf("invalid range value: %v", value))
+							return
 						}
 						mapStr = fmt.Sprintf("(%v.%v BETWEEN %v AND %v)", quotedTableName, scope.Quote(realKey),
 							scope.AddToVars(v0),
 							scope.AddToVars(v1),
 						)
-					case "contains", "icontains", "startswith", "endswith":
+					case "contains", "startswith", "endswith":
 						vis := value.(string)
 						switch op {
-						case "contains", "icontains":
+						case "contains":
 							vis = fmt.Sprintf("%%%s%%", vis)
 						case "startswith":
 							vis = fmt.Sprintf("%s%%", vis)
@@ -655,7 +656,8 @@ func (scope *Scope) buildCondition(clause map[string]interface{}, include bool) 
 						mapStr = fmt.Sprintf("(%v.%v REGEXP %v)", quotedTableName, scope.Quote(realKey),
 							scope.AddToVars(value))
 					default:
-						panic(fmt.Sprintf("filters operator:%s not implement", op))
+						scope.Err(fmt.Errorf("unsupport operator: %s", op))
+						return
 					}
 					sqls = append(sqls, mapStr)
 				}
