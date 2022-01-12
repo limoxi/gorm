@@ -346,7 +346,8 @@ func (schema *Schema) ParseField(fieldStruct reflect.StructField) *Field {
 		}
 	}
 
-	if _, ok := field.TagSettings["EMBEDDED"]; ok || (fieldStruct.Anonymous && !isValuer && (field.Creatable || field.Updatable || field.Readable)) {
+	if _, ok := field.TagSettings["EMBEDDED"]; field.GORMDataType != Time && field.GORMDataType != Bytes &&
+		(ok || (fieldStruct.Anonymous && !isValuer && (field.Creatable || field.Updatable || field.Readable))) {
 		kind := reflect.Indirect(fieldValue).Kind()
 		switch kind {
 		case reflect.Struct:
@@ -398,8 +399,8 @@ func (schema *Schema) ParseField(fieldStruct reflect.StructField) *Field {
 					ef.TagSettings[k] = v
 				}
 			}
-		case reflect.Invalid, reflect.Uintptr, reflect.Array, reflect.Chan,          reflect.Func,      reflect.Interface,
-		     reflect.Map,     reflect.Ptr,     reflect.Slice, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128:
+		case reflect.Invalid, reflect.Uintptr, reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+			reflect.Map, reflect.Ptr, reflect.Slice, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128:
 			schema.err = fmt.Errorf("invalid embedded struct for %s's field %s, should be struct, but got %v", field.Schema.Name, field.Name, field.FieldType)
 		}
 	}
