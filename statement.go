@@ -270,6 +270,68 @@ func (stmt *Statement) AddClauseIfNotExists(v clause.Interface) {
 	}
 }
 
+func (stmt *Statement) buildDjangoLikeConds(key string, v interface{}, rv reflect.Value) []clause.Expression {
+	sps := strings.Split(key, "__")
+	field := sps[0]
+	op := sps[1]
+
+	conds := make([]clause.Expression, 0)
+	switch op {
+	case "in", "notin":
+		valueLen := rv.Len()
+		values := make([]interface{}, valueLen)
+		for i := 0; i < valueLen; i++ {
+			values[i] = rv.Index(i).Interface()
+		}
+		if op == "in" {
+			conds = append(conds, clause.IN{Column: field, Values: values})
+		} else {
+			conds = append(conds, clause.Not(clause.IN{Column: field, Values: values}))
+		}
+	case "equal", "gt", "gte", "lt", "lte", "ne", "not":
+		opm := "="
+		switch op {
+		case "", "equal":
+		case "gt":
+			opm = ">"
+		case "gte":
+			opm = ">="
+		case "lt":
+			opm = "<"
+		case "lte":
+			opm = "<="
+		case "ne", "not":
+			opm = "<>"
+		}
+		sf := fmt.Sprintf("%s %s ?", field, opm)
+		conds = append(conds, stmt.BuildCondition(sf, v)...)
+	case "range", "between":
+		valueLen := rv.Len()
+		values := make([]interface{}, valueLen)
+		for i := 0; i < valueLen; i++ {
+			values[i] = rv.Index(i).Interface()
+		}
+		sf := fmt.Sprintf("%s BETWEEN ? AND ?", field)
+		conds = append(conds, stmt.BuildCondition(sf, values...)...)
+	case "like", "contains", "startswith", "endswith":
+		sf := fmt.Sprintf("%s LIKE ?", field)
+		value := v.(string)
+		switch op {
+		case "contains", "like":
+			value = fmt.Sprintf("%%%s%%", value)
+		case "startswith":
+			value = fmt.Sprintf("%s%%", value)
+		case "endswith":
+			value = fmt.Sprintf("%%%s", value)
+		}
+		conds = append(conds, stmt.BuildCondition(sf, value)...)
+	case "regexp":
+		sf := fmt.Sprintf("%s REGEXP ?", field)
+		conds = append(conds, stmt.BuildCondition(sf, v)...)
+	}
+	return conds
+}
+
 // BuildCondition build condition
 func (stmt *Statement) BuildCondition(query interface{}, args ...interface{}) []clause.Expression {
 	if s, ok := query.(string); ok {
@@ -346,6 +408,10 @@ func (stmt *Statement) BuildCondition(query interface{}, args ...interface{}) []
 
 			for _, key := range keys {
 				reflectValue := reflect.Indirect(reflect.ValueOf(v[key]))
+				if strings.Contains(key, "__") {
+					conds = append(conds, stmt.buildDjangoLikeConds(key, v[key], reflectValue)...)
+					continue
+				}
 				switch reflectValue.Kind() {
 				case reflect.Slice, reflect.Array:
 					if _, ok := v[key].(driver.Valuer); ok {
