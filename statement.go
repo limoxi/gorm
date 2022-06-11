@@ -130,7 +130,7 @@ func (stmt *Statement) QuoteTo(writer clause.Writer, field interface{}) {
 		writer.WriteByte('(')
 		for idx, d := range v {
 			if idx > 0 {
-				writer.WriteString(",")
+				writer.WriteByte(',')
 			}
 			stmt.QuoteTo(writer, d)
 		}
@@ -143,7 +143,7 @@ func (stmt *Statement) QuoteTo(writer clause.Writer, field interface{}) {
 		writer.WriteByte('(')
 		for idx, d := range v {
 			if idx > 0 {
-				writer.WriteString(",")
+				writer.WriteByte(',')
 			}
 			stmt.DB.Dialector.QuoteTo(writer, d)
 		}
@@ -179,9 +179,7 @@ func (stmt *Statement) AddVar(writer clause.Writer, vars ...interface{}) {
 			} else {
 				stmt.AddVar(writer, v.GormValue(stmt.Context, stmt.DB))
 			}
-		case clause.Expr:
-			v.Build(stmt)
-		case *clause.Expr:
+		case clause.Expression:
 			v.Build(stmt)
 		case driver.Valuer:
 			stmt.Vars = append(stmt.Vars, v)
@@ -376,6 +374,10 @@ func (stmt *Statement) BuildCondition(query interface{}, args ...interface{}) []
 		case clause.Expression:
 			conds = append(conds, v)
 		case *DB:
+			for _, scope := range v.Statement.scopes {
+				v = scope(v)
+			}
+
 			if cs, ok := v.Statement.Clauses["WHERE"]; ok {
 				if where, ok := cs.Expression.(clause.Where); ok {
 					if len(where.Exprs) == 1 {
@@ -457,7 +459,7 @@ func (stmt *Statement) BuildCondition(query interface{}, args ...interface{}) []
 					for _, field := range s.Fields {
 						selected := selectedColumns[field.DBName] || selectedColumns[field.Name]
 						if selected || (!restricted && field.Readable) {
-							if v, isZero := field.ValueOf(reflectValue); !isZero || selected {
+							if v, isZero := field.ValueOf(stmt.Context, reflectValue); !isZero || selected {
 								if field.DBName != "" {
 									conds = append(conds, clause.Eq{Column: clause.Column{Table: clause.CurrentTable, Name: field.DBName}, Value: v})
 								} else if field.DataType != "" {
@@ -471,7 +473,7 @@ func (stmt *Statement) BuildCondition(query interface{}, args ...interface{}) []
 						for _, field := range s.Fields {
 							selected := selectedColumns[field.DBName] || selectedColumns[field.Name]
 							if selected || (!restricted && field.Readable) {
-								if v, isZero := field.ValueOf(reflectValue.Index(i)); !isZero || selected {
+								if v, isZero := field.ValueOf(stmt.Context, reflectValue.Index(i)); !isZero || selected {
 									if field.DBName != "" {
 										conds = append(conds, clause.Eq{Column: clause.Column{Table: clause.CurrentTable, Name: field.DBName}, Value: v})
 									} else if field.DataType != "" {
@@ -630,7 +632,7 @@ func (stmt *Statement) SetColumn(name string, value interface{}, fromCallbacks .
 
 				switch destValue.Kind() {
 				case reflect.Struct:
-					field.Set(destValue, value)
+					stmt.AddError(field.Set(stmt.Context, destValue, value))
 				default:
 					stmt.AddError(ErrInvalidData)
 				}
@@ -640,10 +642,10 @@ func (stmt *Statement) SetColumn(name string, value interface{}, fromCallbacks .
 			case reflect.Slice, reflect.Array:
 				if len(fromCallbacks) > 0 {
 					for i := 0; i < stmt.ReflectValue.Len(); i++ {
-						field.Set(stmt.ReflectValue.Index(i), value)
+						stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue.Index(i), value))
 					}
 				} else {
-					field.Set(stmt.ReflectValue.Index(stmt.CurDestIndex), value)
+					stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue.Index(stmt.CurDestIndex), value))
 				}
 			case reflect.Struct:
 				if !stmt.ReflectValue.CanAddr() {
@@ -651,7 +653,7 @@ func (stmt *Statement) SetColumn(name string, value interface{}, fromCallbacks .
 					return
 				}
 
-				field.Set(stmt.ReflectValue, value)
+				stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue, value))
 			}
 		} else {
 			stmt.AddError(ErrInvalidField)
@@ -671,12 +673,12 @@ func (stmt *Statement) Changed(fields ...string) bool {
 
 	selectColumns, restricted := stmt.SelectAndOmitColumns(false, true)
 	changed := func(field *schema.Field) bool {
-		fieldValue, _ := field.ValueOf(modelValue)
+		fieldValue, _ := field.ValueOf(stmt.Context, modelValue)
 		if v, ok := selectColumns[field.DBName]; (ok && v) || (!ok && !restricted) {
-			if v, ok := stmt.Dest.(map[string]interface{}); ok {
-				if fv, ok := v[field.Name]; ok {
+			if mv, mok := stmt.Dest.(map[string]interface{}); mok {
+				if fv, ok := mv[field.Name]; ok {
 					return !utils.AssertEqual(fv, fieldValue)
-				} else if fv, ok := v[field.DBName]; ok {
+				} else if fv, ok := mv[field.DBName]; ok {
 					return !utils.AssertEqual(fv, fieldValue)
 				}
 			} else {
@@ -685,7 +687,10 @@ func (stmt *Statement) Changed(fields ...string) bool {
 					destValue = destValue.Elem()
 				}
 
-				changedValue, zero := field.ValueOf(destValue)
+				changedValue, zero := field.ValueOf(stmt.Context, destValue)
+				if v {
+					return !utils.AssertEqual(changedValue, fieldValue)
+				}
 				return !zero && !utils.AssertEqual(changedValue, fieldValue)
 			}
 		}

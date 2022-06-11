@@ -123,7 +123,7 @@ func TestCreateFromMap(t *testing.T) {
 		{"name": "create_from_map_3", "Age": 20},
 	}
 
-	if err := DB.Model(&User{}).Create(datas).Error; err != nil {
+	if err := DB.Model(&User{}).Create(&datas).Error; err != nil {
 		t.Fatalf("failed to create data from slice of map, got error: %v", err)
 	}
 
@@ -476,6 +476,13 @@ func TestOmitWithCreate(t *testing.T) {
 	CheckUser(t, result2, user2)
 }
 
+func TestFirstOrCreateNotExistsTable(t *testing.T) {
+	company := Company{Name: "first_or_create_if_not_exists_table"}
+	if err := DB.Table("not_exists").FirstOrCreate(&company).Error; err == nil {
+		t.Errorf("not exists table, but err is nil")
+	}
+}
+
 func TestFirstOrCreateWithPrimaryKey(t *testing.T) {
 	company := Company{ID: 100, Name: "company100_with_primarykey"}
 	DB.FirstOrCreate(&company)
@@ -524,5 +531,19 @@ func TestCreateNilPointer(t *testing.T) {
 	err := DB.Create(user).Error
 	if err == nil || err != gorm.ErrInvalidValue {
 		t.Fatalf("it is not ErrInvalidValue")
+	}
+}
+
+func TestFirstOrCreateRowsAffected(t *testing.T) {
+	user := User{Name: "TestFirstOrCreateRowsAffected"}
+
+	res := DB.FirstOrCreate(&user, "name = ?", user.Name)
+	if res.Error != nil || res.RowsAffected != 1 {
+		t.Fatalf("first or create rows affect err:%v rows:%d", res.Error, res.RowsAffected)
+	}
+
+	res = DB.FirstOrCreate(&user, "name = ?", user.Name)
+	if res.Error != nil || res.RowsAffected != 0 {
+		t.Fatalf("first or create rows affect err:%v rows:%d", res.Error, res.RowsAffected)
 	}
 }
