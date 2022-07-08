@@ -460,6 +460,15 @@ func (db *DB) Count(count *int64) (tx *DB) {
 	return
 }
 
+func (db *DB) Exist() bool {
+	var count int64
+	tx := db.Count(&count)
+	if tx.Error != nil {
+		return false
+	}
+	return count > 0
+}
+
 func (db *DB) Row() *sql.Row {
 	tx := db.getInstance().Set("rows", false)
 	tx = tx.callbacks.Row().Execute(tx)

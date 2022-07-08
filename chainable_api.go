@@ -237,6 +237,19 @@ func (db *DB) Order(value interface{}) (tx *DB) {
 				}},
 			})
 		}
+	case []string:
+		var columns []clause.OrderByColumn
+		for _, attr := range v {
+			if attr == "" {
+				continue
+			}
+			columns = append(columns, clause.OrderByColumn{
+				Column: clause.Column{Name: attr, Raw: true},
+			})
+		}
+		tx.Statement.AddClause(clause.OrderBy{
+			Columns: columns,
+		})
 	}
 	return
 }
