@@ -231,7 +231,11 @@ func (db *DB) FindInBatches(dest interface{}, batchSize int, fc func(tx *DB, bat
 			break
 		}
 
-		primaryValue, _ := result.Statement.Schema.PrioritizedPrimaryField.ValueOf(tx.Statement.Context, resultsValue.Index(resultsValue.Len()-1))
+		primaryValue, zero := result.Statement.Schema.PrioritizedPrimaryField.ValueOf(tx.Statement.Context, resultsValue.Index(resultsValue.Len()-1))
+		if zero {
+			tx.AddError(ErrPrimaryKeyRequired)
+			break
+		}
 		queryDB = tx.Clauses(clause.Gt{Column: clause.Column{Table: clause.CurrentTable, Name: clause.PrimaryKey}, Value: primaryValue})
 	}
 
@@ -322,45 +326,48 @@ func (db *DB) FirstOrCreate(dest interface{}, conds ...interface{}) (tx *DB) {
 	queryTx := db.Session(&Session{}).Limit(1).Order(clause.OrderByColumn{
 		Column: clause.Column{Table: clause.CurrentTable, Name: clause.PrimaryKey},
 	})
-	if result := queryTx.Find(dest, conds...); result.Error == nil {
-		if result.RowsAffected == 0 {
-			if c, ok := result.Statement.Clauses["WHERE"]; ok {
-				if where, ok := c.Expression.(clause.Where); ok {
-					result.assignInterfacesToValue(where.Exprs)
-				}
-			}
 
-			// initialize with attrs, conds
-			if len(db.Statement.attrs) > 0 {
-				result.assignInterfacesToValue(db.Statement.attrs...)
-			}
-
-			// initialize with attrs, conds
-			if len(db.Statement.assigns) > 0 {
-				result.assignInterfacesToValue(db.Statement.assigns...)
-			}
-
-			return tx.Create(dest)
-		} else if len(db.Statement.assigns) > 0 {
-			exprs := tx.Statement.BuildCondition(db.Statement.assigns[0], db.Statement.assigns[1:]...)
-			assigns := map[string]interface{}{}
-			for _, expr := range exprs {
-				if eq, ok := expr.(clause.Eq); ok {
-					switch column := eq.Column.(type) {
-					case string:
-						assigns[column] = eq.Value
-					case clause.Column:
-						assigns[column.Name] = eq.Value
-					default:
-					}
-				}
-			}
-
-			return tx.Model(dest).Updates(assigns)
-		}
-	} else {
+	result := queryTx.Find(dest, conds...)
+	if result.Error != nil {
 		tx.Error = result.Error
+		return tx
 	}
+
+	if result.RowsAffected == 0 {
+		if c, ok := result.Statement.Clauses["WHERE"]; ok {
+			if where, ok := c.Expression.(clause.Where); ok {
+				result.assignInterfacesToValue(where.Exprs)
+			}
+		}
+
+		// initialize with attrs, conds
+		if len(db.Statement.attrs) > 0 {
+			result.assignInterfacesToValue(db.Statement.attrs...)
+		}
+
+		// initialize with attrs, conds
+		if len(db.Statement.assigns) > 0 {
+			result.assignInterfacesToValue(db.Statement.assigns...)
+		}
+
+		return tx.Create(dest)
+	} else if len(db.Statement.assigns) > 0 {
+		exprs := tx.Statement.BuildCondition(db.Statement.assigns[0], db.Statement.assigns[1:]...)
+		assigns := map[string]interface{}{}
+		for _, expr := range exprs {
+			if eq, ok := expr.(clause.Eq); ok {
+				switch column := eq.Column.(type) {
+				case string:
+					assigns[column] = eq.Value
+				case clause.Column:
+					assigns[column.Name] = eq.Value
+				}
+			}
+		}
+
+		return tx.Model(dest).Updates(assigns)
+	}
+
 	return tx
 }
 
@@ -461,7 +468,7 @@ func (db *DB) Count(count *int64) (tx *DB) {
 	tx.Statement.Dest = count
 	tx = tx.callbacks.Query().Execute(tx)
 
-	if _, ok := db.Statement.Clauses["GROUP BY"]; ok || tx.RowsAffected != 1 {
+	if tx.RowsAffected != 1 {
 		*count = tx.RowsAffected
 	}
 
@@ -532,8 +539,9 @@ func (db *DB) Scan(dest interface{}) (tx *DB) {
 }
 
 // Pluck queries a single column from a model, returning in the slice dest. E.g.:
-//     var ages []int64
-//     db.Model(&users).Pluck("age", &ages)
+//
+//	var ages []int64
+//	db.Model(&users).Pluck("age", &ages)
 func (db *DB) Pluck(column string, dest interface{}) (tx *DB) {
 	tx = db.getInstance()
 	if tx.Statement.Model != nil {
