@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"gorm.io/driver/postgres"
-
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
@@ -29,7 +28,7 @@ func TestMigrate(t *testing.T) {
 	}
 
 	if err := DB.AutoMigrate(allModels...); err != nil {
-		t.Fatalf("Failed to auto migrate, but got error %v", err)
+		t.Fatalf("Failed to auto migrate, got error %v", err)
 	}
 
 	if tables, err := DB.Migrator().GetTables(); err != nil {
@@ -76,7 +75,6 @@ func TestMigrate(t *testing.T) {
 			t.Fatalf("Failed to find index for many2many for %v %v", indexes[0], indexes[1])
 		}
 	}
-
 }
 
 func TestAutoMigrateInt8PG(t *testing.T) {
@@ -258,9 +256,10 @@ func TestMigrateWithIndexComment(t *testing.T) {
 
 func TestMigrateWithUniqueIndex(t *testing.T) {
 	type UserWithUniqueIndex struct {
-		ID   int
-		Name string    `gorm:"size:20;index:idx_name,unique"`
-		Date time.Time `gorm:"index:idx_name,unique"`
+		ID    int
+		Name  string    `gorm:"size:20;index:idx_name,unique"`
+		Date  time.Time `gorm:"index:idx_name,unique"`
+		UName string    `gorm:"uniqueIndex;size:255"`
 	}
 
 	DB.Migrator().DropTable(&UserWithUniqueIndex{})
@@ -269,6 +268,18 @@ func TestMigrateWithUniqueIndex(t *testing.T) {
 	}
 
 	if !DB.Migrator().HasIndex(&UserWithUniqueIndex{}, "idx_name") {
+		t.Errorf("Failed to find created index")
+	}
+
+	if !DB.Migrator().HasIndex(&UserWithUniqueIndex{}, "idx_user_with_unique_indices_u_name") {
+		t.Errorf("Failed to find created index")
+	}
+
+	if err := DB.AutoMigrate(&UserWithUniqueIndex{}); err != nil {
+		t.Fatalf("failed to migrate, got %v", err)
+	}
+
+	if !DB.Migrator().HasIndex(&UserWithUniqueIndex{}, "idx_user_with_unique_indices_u_name") {
 		t.Errorf("Failed to find created index")
 	}
 }
@@ -375,7 +386,137 @@ func TestMigrateIndexes(t *testing.T) {
 	}
 }
 
+func TestTiDBMigrateColumns(t *testing.T) {
+	if !isTiDB() {
+		t.Skip()
+	}
+
+	// TiDB can't change column constraint and has auto_random feature
+	type ColumnStruct struct {
+		ID    int `gorm:"primarykey;default:auto_random()"`
+		Name  string
+		Age   int    `gorm:"default:18;comment:my age"`
+		Code  string `gorm:"unique;comment:my code;"`
+		Code2 string
+		Code3 string `gorm:"unique"`
+	}
+
+	DB.Migrator().DropTable(&ColumnStruct{})
+
+	if err := DB.AutoMigrate(&ColumnStruct{}); err != nil {
+		t.Errorf("Failed to migrate, got %v", err)
+	}
+
+	type ColumnStruct2 struct {
+		ID    int    `gorm:"primarykey;default:auto_random()"`
+		Name  string `gorm:"size:100"`
+		Code  string `gorm:"unique;comment:my code2;default:hello"`
+		Code2 string `gorm:"comment:my code2;default:hello"`
+	}
+
+	if err := DB.Table("column_structs").Migrator().AlterColumn(&ColumnStruct{}, "Name"); err != nil {
+		t.Fatalf("no error should happened when alter column, but got %v", err)
+	}
+
+	if err := DB.Table("column_structs").AutoMigrate(&ColumnStruct2{}); err != nil {
+		t.Fatalf("no error should happened when auto migrate column, but got %v", err)
+	}
+
+	if columnTypes, err := DB.Migrator().ColumnTypes(&ColumnStruct{}); err != nil {
+		t.Fatalf("no error should returns for ColumnTypes")
+	} else {
+		stmt := &gorm.Statement{DB: DB}
+		stmt.Parse(&ColumnStruct2{})
+
+		for _, columnType := range columnTypes {
+			switch columnType.Name() {
+			case "id":
+				if v, ok := columnType.PrimaryKey(); !ok || !v {
+					t.Fatalf("column id primary key should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+				}
+			case "name":
+				dataType := DB.Dialector.DataTypeOf(stmt.Schema.LookUpField(columnType.Name()))
+				if !strings.Contains(strings.ToUpper(dataType), strings.ToUpper(columnType.DatabaseTypeName())) {
+					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
+				}
+				if length, ok := columnType.Length(); !ok || length != 100 {
+					t.Fatalf("column name length should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), length, 100, columnType)
+				}
+			case "age":
+				if v, ok := columnType.DefaultValue(); !ok || v != "18" {
+					t.Fatalf("column age default value should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+				}
+				if v, ok := columnType.Comment(); !ok || v != "my age" {
+					t.Fatalf("column age comment should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+				}
+			case "code":
+				if v, ok := columnType.Unique(); !ok || !v {
+					t.Fatalf("column code unique should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+				}
+				if v, ok := columnType.DefaultValue(); !ok || v != "hello" {
+					t.Fatalf("column code default value should be correct, name: %v, column: %#v, default value: %v", columnType.Name(), columnType, v)
+				}
+				if v, ok := columnType.Comment(); !ok || v != "my code2" {
+					t.Fatalf("column code comment should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+				}
+			case "code2":
+				// Code2 string `gorm:"comment:my code2;default:hello"`
+				if v, ok := columnType.DefaultValue(); !ok || v != "hello" {
+					t.Fatalf("column code default value should be correct, name: %v, column: %#v, default value: %v", columnType.Name(), columnType, v)
+				}
+				if v, ok := columnType.Comment(); !ok || v != "my code2" {
+					t.Fatalf("column code comment should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+				}
+			}
+		}
+	}
+
+	type NewColumnStruct struct {
+		gorm.Model
+		Name    string
+		NewName string
+	}
+
+	if err := DB.Table("column_structs").Migrator().AddColumn(&NewColumnStruct{}, "NewName"); err != nil {
+		t.Fatalf("Failed to add column, got %v", err)
+	}
+
+	if !DB.Table("column_structs").Migrator().HasColumn(&NewColumnStruct{}, "NewName") {
+		t.Fatalf("Failed to find added column")
+	}
+
+	if err := DB.Table("column_structs").Migrator().DropColumn(&NewColumnStruct{}, "NewName"); err != nil {
+		t.Fatalf("Failed to add column, got %v", err)
+	}
+
+	if DB.Table("column_structs").Migrator().HasColumn(&NewColumnStruct{}, "NewName") {
+		t.Fatalf("Found deleted column")
+	}
+
+	if err := DB.Table("column_structs").Migrator().AddColumn(&NewColumnStruct{}, "NewName"); err != nil {
+		t.Fatalf("Failed to add column, got %v", err)
+	}
+
+	if err := DB.Table("column_structs").Migrator().RenameColumn(&NewColumnStruct{}, "NewName", "new_new_name"); err != nil {
+		t.Fatalf("Failed to add column, got %v", err)
+	}
+
+	if !DB.Table("column_structs").Migrator().HasColumn(&NewColumnStruct{}, "new_new_name") {
+		t.Fatalf("Failed to found renamed column")
+	}
+
+	if err := DB.Table("column_structs").Migrator().DropColumn(&NewColumnStruct{}, "new_new_name"); err != nil {
+		t.Fatalf("Failed to add column, got %v", err)
+	}
+
+	if DB.Table("column_structs").Migrator().HasColumn(&NewColumnStruct{}, "new_new_name") {
+		t.Fatalf("Found deleted column")
+	}
+}
+
 func TestMigrateColumns(t *testing.T) {
+	tidbSkip(t, "use another test case")
+
 	sqlite := DB.Dialector.Name() == "sqlite"
 	sqlserver := DB.Dialector.Name() == "sqlserver"
 
@@ -757,6 +898,32 @@ func TestPrimarykeyID(t *testing.T) {
 	}
 }
 
+func TestCurrentTimestamp(t *testing.T) {
+	if DB.Dialector.Name() != "mysql" {
+		return
+	}
+	type CurrentTimestampTest struct {
+		ID     string     `gorm:"primary_key"`
+		TimeAt *time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;unique"`
+	}
+	var err error
+	err = DB.Migrator().DropTable(&CurrentTimestampTest{})
+	if err != nil {
+		t.Errorf("DropTable err:%v", err)
+	}
+	err = DB.AutoMigrate(&CurrentTimestampTest{})
+	if err != nil {
+		t.Fatalf("AutoMigrate err:%v", err)
+	}
+
+	err = DB.AutoMigrate(&CurrentTimestampTest{})
+	if err != nil {
+		t.Fatalf("AutoMigrate err:%v", err)
+	}
+	AssertEqual(t, true, DB.Migrator().HasIndex(&CurrentTimestampTest{}, "time_at"))
+	AssertEqual(t, false, DB.Migrator().HasIndex(&CurrentTimestampTest{}, "time_at_2"))
+}
+
 func TestUniqueColumn(t *testing.T) {
 	if DB.Dialector.Name() != "mysql" {
 		return
@@ -827,6 +994,8 @@ func TestUniqueColumn(t *testing.T) {
 	value, ok = ct.DefaultValue()
 	AssertEqual(t, "", value)
 	AssertEqual(t, false, ok)
+
+	tidbSkip(t, "can't change column constraint")
 
 	// null -> empty string
 	err = DB.Table("unique_tests").AutoMigrate(&UniqueTest3{})
@@ -1097,6 +1266,50 @@ func TestMigrateArrayTypeModel(t *testing.T) {
 	AssertEqual(t, "integer[]", ct.DatabaseTypeName())
 }
 
+type mockMigrator struct {
+	gorm.Migrator
+}
+
+func (mm mockMigrator) AlterColumn(dst interface{}, field string) error {
+	err := mm.Migrator.AlterColumn(dst, field)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("trigger alter column error, field: %s", field)
+}
+
+func TestMigrateDonotAlterColumn(t *testing.T) {
+	wrapMockMigrator := func(m gorm.Migrator) mockMigrator {
+		return mockMigrator{
+			Migrator: m,
+		}
+	}
+	m := DB.Migrator()
+	mockM := wrapMockMigrator(m)
+
+	type NotTriggerUpdate struct {
+		ID  uint
+		F1  uint16
+		F2  uint32
+		F3  int
+		F4  int64
+		F5  string
+		F6  float32
+		F7  float64
+		F8  time.Time
+		F9  bool
+		F10 []byte
+	}
+
+	var err error
+	err = mockM.DropTable(&NotTriggerUpdate{})
+	AssertEqual(t, err, nil)
+	err = mockM.AutoMigrate(&NotTriggerUpdate{})
+	AssertEqual(t, err, nil)
+	err = mockM.AutoMigrate(&NotTriggerUpdate{})
+	AssertEqual(t, err, nil)
+}
+
 func TestMigrateSameEmbeddedFieldName(t *testing.T) {
 	type UserStat struct {
 		GroundDestroyCount int
@@ -1133,4 +1346,255 @@ func TestMigrateSameEmbeddedFieldName(t *testing.T) {
 
 	_, err = findColumnType(&GameUser{}, "rate_ground_rb_ground_destory_count")
 	AssertEqual(t, nil, err)
+}
+
+func TestMigrateDefaultNullString(t *testing.T) {
+	if DB.Dialector.Name() == "sqlserver" {
+		// sqlserver driver treats NULL and 'NULL' the same
+		t.Skip("skip sqlserver")
+	}
+
+	type NullModel struct {
+		ID      uint
+		Content string `gorm:"default:null"`
+	}
+
+	type NullStringModel struct {
+		ID      uint
+		Content string `gorm:"default:'null'"`
+	}
+
+	tableName := "null_string_model"
+
+	DB.Migrator().DropTable(tableName)
+
+	err := DB.Table(tableName).AutoMigrate(&NullModel{})
+	AssertEqual(t, err, nil)
+
+	// default null -> 'null'
+	err = DB.Table(tableName).AutoMigrate(&NullStringModel{})
+	AssertEqual(t, err, nil)
+
+	columnType, err := findColumnType(tableName, "content")
+	AssertEqual(t, err, nil)
+
+	defVal, ok := columnType.DefaultValue()
+	AssertEqual(t, defVal, "null")
+	AssertEqual(t, ok, true)
+
+	// default 'null' -> 'null'
+	session := DB.Session(&gorm.Session{Logger: Tracer{
+		Logger: DB.Config.Logger,
+		Test: func(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
+			sql, _ := fc()
+			if strings.HasPrefix(sql, "ALTER TABLE") {
+				t.Errorf("shouldn't execute: sql=%s", sql)
+			}
+		},
+	}})
+	err = session.Table(tableName).AutoMigrate(&NullStringModel{})
+	AssertEqual(t, err, nil)
+
+	columnType, err = findColumnType(tableName, "content")
+	AssertEqual(t, err, nil)
+
+	defVal, ok = columnType.DefaultValue()
+	AssertEqual(t, defVal, "null")
+	AssertEqual(t, ok, true)
+
+	// default 'null' -> null
+	err = DB.Table(tableName).AutoMigrate(&NullModel{})
+	AssertEqual(t, err, nil)
+
+	columnType, err = findColumnType(tableName, "content")
+	AssertEqual(t, err, nil)
+
+	defVal, ok = columnType.DefaultValue()
+	AssertEqual(t, defVal, "")
+	AssertEqual(t, ok, false)
+}
+
+func TestMigrateMySQLWithCustomizedTypes(t *testing.T) {
+	if DB.Dialector.Name() != "mysql" {
+		t.Skip()
+	}
+
+	type MyTable struct {
+		Def string `gorm:"size:512;index:idx_def,unique"`
+		Abc string `gorm:"size:65000000"`
+	}
+
+	DB.Migrator().DropTable("my_tables")
+
+	sql := "CREATE TABLE `my_tables` (`def` varchar(512),`abc` longtext,UNIQUE INDEX `idx_def` (`def`))"
+	if err := DB.Exec(sql).Error; err != nil {
+		t.Errorf("Failed, got error: %v", err)
+	}
+
+	session := DB.Session(&gorm.Session{Logger: Tracer{
+		Logger: DB.Config.Logger,
+		Test: func(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
+			sql, _ := fc()
+			if strings.HasPrefix(sql, "ALTER TABLE") {
+				t.Errorf("shouldn't execute: sql=%s", sql)
+			}
+		},
+	}})
+
+	if err := session.AutoMigrate(&MyTable{}); err != nil {
+		t.Errorf("Failed, got error: %v", err)
+	}
+}
+
+func TestMigrateIgnoreRelations(t *testing.T) {
+	type RelationModel1 struct {
+		ID uint
+	}
+	type RelationModel2 struct {
+		ID uint
+	}
+	type RelationModel3 struct {
+		ID               uint
+		RelationModel1ID uint
+		RelationModel1   *RelationModel1
+		RelationModel2ID uint
+		RelationModel2   *RelationModel2 `gorm:"-:migration"`
+	}
+
+	var err error
+	_ = DB.Migrator().DropTable(&RelationModel1{}, &RelationModel2{}, &RelationModel3{})
+
+	tx := DB.Session(&gorm.Session{})
+	tx.IgnoreRelationshipsWhenMigrating = true
+
+	err = tx.AutoMigrate(&RelationModel3{})
+	if err != nil {
+		t.Errorf("AutoMigrate err:%v", err)
+	}
+
+	// RelationModel3 should be existed
+	_, err = findColumnType(&RelationModel3{}, "id")
+	AssertEqual(t, nil, err)
+
+	// RelationModel1 should not be existed
+	_, err = findColumnType(&RelationModel1{}, "id")
+	if err == nil {
+		t.Errorf("RelationModel1 should not be migrated")
+	}
+
+	// RelationModel2 should not be existed
+	_, err = findColumnType(&RelationModel2{}, "id")
+	if err == nil {
+		t.Errorf("RelationModel2 should not be migrated")
+	}
+
+	tx.IgnoreRelationshipsWhenMigrating = false
+
+	err = tx.AutoMigrate(&RelationModel3{})
+	if err != nil {
+		t.Errorf("AutoMigrate err:%v", err)
+	}
+
+	// RelationModel3 should be existed
+	_, err = findColumnType(&RelationModel3{}, "id")
+	AssertEqual(t, nil, err)
+
+	// RelationModel1 should be existed
+	_, err = findColumnType(&RelationModel1{}, "id")
+	AssertEqual(t, nil, err)
+
+	// RelationModel2 should not be existed
+	_, err = findColumnType(&RelationModel2{}, "id")
+	if err == nil {
+		t.Errorf("RelationModel2 should not be migrated")
+	}
+}
+
+func TestMigrateView(t *testing.T) {
+	DB.Save(GetUser("joins-args-db", Config{Pets: 2}))
+
+	if err := DB.Migrator().CreateView("invalid_users_pets", gorm.ViewOption{Query: nil}); err != gorm.ErrSubQueryRequired {
+		t.Fatalf("no view should be created, got %v", err)
+	}
+
+	query := DB.Model(&User{}).
+		Select("users.id as users_id, users.name as users_name, pets.id as pets_id, pets.name as pets_name").
+		Joins("inner join pets on pets.user_id = users.id")
+
+	if err := DB.Migrator().CreateView("users_pets", gorm.ViewOption{Query: query}); err != nil {
+		t.Fatalf("Failed to crate view, got %v", err)
+	}
+
+	var count int64
+	if err := DB.Table("users_pets").Count(&count).Error; err != nil {
+		t.Fatalf("should found created view")
+	}
+
+	if err := DB.Migrator().DropView("users_pets"); err != nil {
+		t.Fatalf("Failed to drop view, got %v", err)
+	}
+
+	query = DB.Model(&User{}).Where("age > ?", 20)
+	if err := DB.Migrator().CreateView("users_view", gorm.ViewOption{Query: query}); err != nil {
+		t.Fatalf("Failed to crate view, got %v", err)
+	}
+	if err := DB.Migrator().DropView("users_view"); err != nil {
+		t.Fatalf("Failed to drop view, got %v", err)
+	}
+}
+
+func TestMigrateExistingBoolColumnPG(t *testing.T) {
+	if DB.Dialector.Name() != "postgres" {
+		return
+	}
+
+	type ColumnStruct struct {
+		gorm.Model
+		Name         string
+		StringBool   string
+		SmallintBool int `gorm:"type:smallint"`
+	}
+
+	type ColumnStruct2 struct {
+		gorm.Model
+		Name         string
+		StringBool   bool // change existing boolean column from string to boolean
+		SmallintBool bool // change existing boolean column from smallint or other to boolean
+	}
+
+	DB.Migrator().DropTable(&ColumnStruct{})
+
+	if err := DB.AutoMigrate(&ColumnStruct{}); err != nil {
+		t.Errorf("Failed to migrate, got %v", err)
+	}
+
+	if err := DB.Table("column_structs").AutoMigrate(&ColumnStruct2{}); err != nil {
+		t.Fatalf("no error should happened when auto migrate column, but got %v", err)
+	}
+
+	if columnTypes, err := DB.Migrator().ColumnTypes(&ColumnStruct{}); err != nil {
+		t.Fatalf("no error should returns for ColumnTypes")
+	} else {
+		stmt := &gorm.Statement{DB: DB}
+		stmt.Parse(&ColumnStruct2{})
+
+		for _, columnType := range columnTypes {
+			switch columnType.Name() {
+			case "id":
+				if v, ok := columnType.PrimaryKey(); !ok || !v {
+					t.Fatalf("column id primary key should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+				}
+			case "string_bool":
+				dataType := DB.Dialector.DataTypeOf(stmt.Schema.LookUpField(columnType.Name()))
+				if !strings.Contains(strings.ToUpper(dataType), strings.ToUpper(columnType.DatabaseTypeName())) {
+					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
+				}
+			case "smallint_bool":
+				dataType := DB.Dialector.DataTypeOf(stmt.Schema.LookUpField(columnType.Name()))
+				if !strings.Contains(strings.ToUpper(dataType), strings.ToUpper(columnType.DatabaseTypeName())) {
+					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
+				}
+			}
+		}
+	}
 }

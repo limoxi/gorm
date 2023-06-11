@@ -230,6 +230,28 @@ func TestJoinWithSoftDeleted(t *testing.T) {
 	}
 }
 
+func TestInnerJoins(t *testing.T) {
+	user := *GetUser("inner-joins-1", Config{Company: true, Manager: true, Account: true, NamedPet: false})
+
+	DB.Create(&user)
+
+	var user2 User
+	var err error
+	err = DB.InnerJoins("Company").InnerJoins("Manager").InnerJoins("Account").First(&user2, "users.name = ?", user.Name).Error
+	AssertEqual(t, err, nil)
+	CheckUser(t, user2, user)
+
+	// inner join and NamedPet is nil
+	err = DB.InnerJoins("NamedPet").InnerJoins("Company").InnerJoins("Manager").InnerJoins("Account").First(&user2, "users.name = ?", user.Name).Error
+	AssertEqual(t, err, gorm.ErrRecordNotFound)
+
+	// mixed inner join and left join
+	var user3 User
+	err = DB.Joins("NamedPet").InnerJoins("Company").InnerJoins("Manager").InnerJoins("Account").First(&user3, "users.name = ?", user.Name).Error
+	AssertEqual(t, err, nil)
+	CheckUser(t, user3, user)
+}
+
 func TestJoinWithSameColumnName(t *testing.T) {
 	user := GetUser("TestJoinWithSameColumnName", Config{
 		Languages: 1,
@@ -302,4 +324,79 @@ func TestJoinArgsWithDB(t *testing.T) {
 		t.Fatal("Pet ID can not be empty")
 	}
 	AssertEqual(t, user4.NamedPet.Name, "")
+}
+
+func TestNestedJoins(t *testing.T) {
+	users := []User{
+		{
+			Name: "nested-joins-1",
+			Manager: &User{
+				Name: "nested-joins-manager-1",
+				Company: Company{
+					Name: "nested-joins-manager-company-1",
+				},
+				NamedPet: &Pet{
+					Name: "nested-joins-manager-namepet-1",
+					Toy: Toy{
+						Name: "nested-joins-manager-namepet-toy-1",
+					},
+				},
+			},
+			NamedPet: &Pet{Name: "nested-joins-namepet-1", Toy: Toy{Name: "nested-joins-namepet-toy-1"}},
+		},
+		{
+			Name:     "nested-joins-2",
+			Manager:  GetUser("nested-joins-manager-2", Config{Company: true, NamedPet: true}),
+			NamedPet: &Pet{Name: "nested-joins-namepet-2", Toy: Toy{Name: "nested-joins-namepet-toy-2"}},
+		},
+	}
+
+	DB.Create(&users)
+
+	var userIDs []uint
+	for _, user := range users {
+		userIDs = append(userIDs, user.ID)
+	}
+
+	var users2 []User
+	if err := DB.
+		Joins("Manager").
+		Joins("Manager.Company").
+		Joins("Manager.NamedPet").
+		Joins("Manager.NamedPet.Toy").
+		Joins("NamedPet").
+		Joins("NamedPet.Toy").
+		Find(&users2, "users.id IN ?", userIDs).Error; err != nil {
+		t.Fatalf("Failed to load with joins, got error: %v", err)
+	} else if len(users2) != len(users) {
+		t.Fatalf("Failed to load join users, got: %v, expect: %v", len(users2), len(users))
+	}
+
+	sort.Slice(users2, func(i, j int) bool {
+		return users2[i].ID > users2[j].ID
+	})
+
+	sort.Slice(users, func(i, j int) bool {
+		return users[i].ID > users[j].ID
+	})
+
+	for idx, user := range users {
+		// user
+		CheckUser(t, user, users2[idx])
+		if users2[idx].Manager == nil {
+			t.Fatalf("Failed to load Manager")
+		}
+		// manager
+		CheckUser(t, *user.Manager, *users2[idx].Manager)
+		// user pet
+		if users2[idx].NamedPet == nil {
+			t.Fatalf("Failed to load NamedPet")
+		}
+		CheckPet(t, *user.NamedPet, *users2[idx].NamedPet)
+		// manager pet
+		if users2[idx].Manager.NamedPet == nil {
+			t.Fatalf("Failed to load NamedPet")
+		}
+		CheckPet(t, *user.Manager.NamedPet, *users2[idx].Manager.NamedPet)
+	}
 }

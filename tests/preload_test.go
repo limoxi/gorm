@@ -269,3 +269,178 @@ func TestPreloadWithDiffModel(t *testing.T) {
 
 	CheckUser(t, user, result.User)
 }
+
+func TestNestedPreloadWithUnscoped(t *testing.T) {
+	user := *GetUser("nested_preload", Config{Pets: 1})
+	pet := user.Pets[0]
+	pet.Toy = Toy{Name: "toy_nested_preload_" + strconv.Itoa(1)}
+	pet.Toy = Toy{Name: "toy_nested_preload_" + strconv.Itoa(2)}
+
+	if err := DB.Create(&user).Error; err != nil {
+		t.Fatalf("errors happened when create: %v", err)
+	}
+
+	var user2 User
+	DB.Preload("Pets.Toy").Find(&user2, "id = ?", user.ID)
+	CheckUser(t, user2, user)
+
+	DB.Delete(&pet)
+
+	var user3 User
+	DB.Preload(clause.Associations+"."+clause.Associations).Find(&user3, "id = ?", user.ID)
+	if len(user3.Pets) != 0 {
+		t.Fatalf("User.Pet[0] was deleted and should not exist.")
+	}
+
+	var user4 *User
+	DB.Preload("Pets.Toy").Find(&user4, "id = ?", user.ID)
+	if len(user4.Pets) != 0 {
+		t.Fatalf("User.Pet[0] was deleted and should not exist.")
+	}
+
+	var user5 User
+	DB.Unscoped().Preload(clause.Associations+"."+clause.Associations).Find(&user5, "id = ?", user.ID)
+	CheckUserUnscoped(t, user5, user)
+
+	var user6 *User
+	DB.Unscoped().Preload("Pets.Toy").Find(&user6, "id = ?", user.ID)
+	CheckUserUnscoped(t, *user6, user)
+}
+
+func TestEmbedPreload(t *testing.T) {
+	type Country struct {
+		ID   int `gorm:"primaryKey"`
+		Name string
+	}
+	type EmbeddedAddress struct {
+		ID        int
+		Name      string
+		CountryID *int
+		Country   *Country
+	}
+	type NestedAddress struct {
+		EmbeddedAddress
+	}
+	type Org struct {
+		ID              int
+		PostalAddress   EmbeddedAddress `gorm:"embedded;embeddedPrefix:postal_address_"`
+		VisitingAddress EmbeddedAddress `gorm:"embedded;embeddedPrefix:visiting_address_"`
+		AddressID       *int
+		Address         *EmbeddedAddress
+		NestedAddress   NestedAddress `gorm:"embedded;embeddedPrefix:nested_address_"`
+	}
+
+	DB.Migrator().DropTable(&Org{}, &EmbeddedAddress{}, &Country{})
+	DB.AutoMigrate(&Org{}, &EmbeddedAddress{}, &Country{})
+
+	org := Org{
+		PostalAddress:   EmbeddedAddress{Name: "a1", Country: &Country{Name: "c1"}},
+		VisitingAddress: EmbeddedAddress{Name: "a2", Country: &Country{Name: "c2"}},
+		Address:         &EmbeddedAddress{Name: "a3", Country: &Country{Name: "c3"}},
+		NestedAddress: NestedAddress{
+			EmbeddedAddress: EmbeddedAddress{Name: "a4", Country: &Country{Name: "c4"}},
+		},
+	}
+	if err := DB.Create(&org).Error; err != nil {
+		t.Errorf("failed to create org, got err: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		preloads map[string][]interface{}
+		expect   Org
+	}{
+		{
+			name:     "address country",
+			preloads: map[string][]interface{}{"Address.Country": {}},
+			expect: Org{
+				ID: org.ID,
+				PostalAddress: EmbeddedAddress{
+					ID:        org.PostalAddress.ID,
+					Name:      org.PostalAddress.Name,
+					CountryID: org.PostalAddress.CountryID,
+					Country:   nil,
+				},
+				VisitingAddress: EmbeddedAddress{
+					ID:        org.VisitingAddress.ID,
+					Name:      org.VisitingAddress.Name,
+					CountryID: org.VisitingAddress.CountryID,
+					Country:   nil,
+				},
+				AddressID: org.AddressID,
+				Address:   org.Address,
+				NestedAddress: NestedAddress{EmbeddedAddress{
+					ID:        org.NestedAddress.ID,
+					Name:      org.NestedAddress.Name,
+					CountryID: org.NestedAddress.CountryID,
+					Country:   nil,
+				}},
+			},
+		}, {
+			name:     "postal address country",
+			preloads: map[string][]interface{}{"PostalAddress.Country": {}},
+			expect: Org{
+				ID:            org.ID,
+				PostalAddress: org.PostalAddress,
+				VisitingAddress: EmbeddedAddress{
+					ID:        org.VisitingAddress.ID,
+					Name:      org.VisitingAddress.Name,
+					CountryID: org.VisitingAddress.CountryID,
+					Country:   nil,
+				},
+				AddressID: org.AddressID,
+				Address:   nil,
+				NestedAddress: NestedAddress{EmbeddedAddress{
+					ID:        org.NestedAddress.ID,
+					Name:      org.NestedAddress.Name,
+					CountryID: org.NestedAddress.CountryID,
+					Country:   nil,
+				}},
+			},
+		}, {
+			name:     "nested address country",
+			preloads: map[string][]interface{}{"NestedAddress.EmbeddedAddress.Country": {}},
+			expect: Org{
+				ID: org.ID,
+				PostalAddress: EmbeddedAddress{
+					ID:        org.PostalAddress.ID,
+					Name:      org.PostalAddress.Name,
+					CountryID: org.PostalAddress.CountryID,
+					Country:   nil,
+				},
+				VisitingAddress: EmbeddedAddress{
+					ID:        org.VisitingAddress.ID,
+					Name:      org.VisitingAddress.Name,
+					CountryID: org.VisitingAddress.CountryID,
+					Country:   nil,
+				},
+				AddressID:     org.AddressID,
+				Address:       nil,
+				NestedAddress: org.NestedAddress,
+			},
+		}, {
+			name: "associations",
+			preloads: map[string][]interface{}{
+				clause.Associations: {},
+				// clause.Associations won’t preload nested associations
+				"Address.Country": {},
+			},
+			expect: org,
+		},
+	}
+
+	DB = DB.Debug()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			actual := Org{}
+			tx := DB.Where("id = ?", org.ID).Session(&gorm.Session{})
+			for name, args := range test.preloads {
+				tx = tx.Preload(name, args...)
+			}
+			if err := tx.Find(&actual).Error; err != nil {
+				t.Errorf("failed to find org, got err: %v", err)
+			}
+			AssertEqual(t, actual, test.expect)
+		})
+	}
+}

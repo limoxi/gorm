@@ -208,11 +208,15 @@ func TestUpdateColumn(t *testing.T) {
 	CheckUser(t, user1, *users[0])
 	CheckUser(t, user2, *users[1])
 
-	DB.Model(users[1]).UpdateColumn("name", "update_column_02_newnew")
+	DB.Model(users[1]).UpdateColumn("name", "update_column_02_newnew").UpdateColumn("age", 19)
 	AssertEqual(t, lastUpdatedAt.UnixNano(), users[1].UpdatedAt.UnixNano())
 
 	if users[1].Name != "update_column_02_newnew" {
 		t.Errorf("user 2's name should be updated, but got %v", users[1].Name)
+	}
+
+	if users[1].Age != 19 {
+		t.Errorf("user 2's name should be updated, but got %v", users[1].Age)
 	}
 
 	DB.Model(users[1]).UpdateColumn("age", gorm.Expr("age + 100 - 50"))
@@ -610,6 +614,25 @@ func TestUpdateFromSubQuery(t *testing.T) {
 	}
 }
 
+func TestIdempotentSave(t *testing.T) {
+	create := Company{
+		Name: "company_idempotent",
+	}
+	DB.Create(&create)
+
+	var company Company
+	if err := DB.Find(&company, "id = ?", create.ID).Error; err != nil {
+		t.Fatalf("failed to find created company, got err: %v", err)
+	}
+
+	if err := DB.Save(&company).Error; err != nil || company.ID != create.ID {
+		t.Errorf("failed to save company, got err: %v", err)
+	}
+	if err := DB.Save(&company).Error; err != nil || company.ID != create.ID {
+		t.Errorf("failed to save company, got err: %v", err)
+	}
+}
+
 func TestSave(t *testing.T) {
 	user := *GetUser("save", Config{})
 	DB.Create(&user)
@@ -771,5 +794,91 @@ func TestUpdateReturning(t *testing.T) {
 
 	if results[1].Age-results[0].Age != 100 {
 		t.Errorf("failed to return updated age column")
+	}
+}
+
+func TestUpdateWithDiffSchema(t *testing.T) {
+	user := GetUser("update-diff-schema-1", Config{})
+	DB.Create(&user)
+
+	type UserTemp struct {
+		Name string
+	}
+
+	err := DB.Model(&user).Updates(&UserTemp{Name: "update-diff-schema-2"}).Error
+	AssertEqual(t, err, nil)
+	AssertEqual(t, "update-diff-schema-2", user.Name)
+}
+
+type TokenOwner struct {
+	ID    int
+	Name  string
+	Token Token `gorm:"foreignKey:UserID"`
+}
+
+func (t *TokenOwner) BeforeSave(tx *gorm.DB) error {
+	t.Name += "_name"
+	return nil
+}
+
+type Token struct {
+	UserID  int    `gorm:"primary_key"`
+	Content string `gorm:"type:varchar(100)"`
+}
+
+func (t *Token) BeforeSave(tx *gorm.DB) error {
+	t.Content += "_encrypted"
+	return nil
+}
+
+func TestSaveWithHooks(t *testing.T) {
+	DB.Migrator().DropTable(&Token{}, &TokenOwner{})
+	DB.AutoMigrate(&Token{}, &TokenOwner{})
+
+	saveTokenOwner := func(owner *TokenOwner) (*TokenOwner, error) {
+		var newOwner TokenOwner
+		if err := DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Debug().Session(&gorm.Session{FullSaveAssociations: true}).Save(owner).Error; err != nil {
+				return err
+			}
+			if err := tx.Preload("Token").First(&newOwner, owner.ID).Error; err != nil {
+				return err
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+		return &newOwner, nil
+	}
+
+	owner := TokenOwner{
+		Name:  "user",
+		Token: Token{Content: "token"},
+	}
+	o1, err := saveTokenOwner(&owner)
+	if err != nil {
+		t.Errorf("failed to save token owner, got error: %v", err)
+	}
+	if o1.Name != "user_name" {
+		t.Errorf(`owner name should be "user_name", but got: "%s"`, o1.Name)
+	}
+	if o1.Token.Content != "token_encrypted" {
+		t.Errorf(`token content should be "token_encrypted", but got: "%s"`, o1.Token.Content)
+	}
+
+	owner = TokenOwner{
+		ID:    owner.ID,
+		Name:  "user",
+		Token: Token{Content: "token2"},
+	}
+	o2, err := saveTokenOwner(&owner)
+	if err != nil {
+		t.Errorf("failed to save token owner, got error: %v", err)
+	}
+	if o2.Name != "user_name" {
+		t.Errorf(`owner name should be "user_name", but got: "%s"`, o2.Name)
+	}
+	if o2.Token.Content != "token2_encrypted" {
+		t.Errorf(`token content should be "token2_encrypted", but got: "%s"`, o2.Token.Content)
 	}
 }
