@@ -2,23 +2,30 @@ package tests_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math/rand"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"gorm.io/driver/postgres"
+
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
+	"gorm.io/gorm/migrator"
 	"gorm.io/gorm/schema"
+	"gorm.io/gorm/utils"
 	. "gorm.io/gorm/utils/tests"
 )
 
 func TestMigrate(t *testing.T) {
-	allModels := []interface{}{&User{}, &Account{}, &Pet{}, &Company{}, &Toy{}, &Language{}}
+	allModels := []interface{}{&User{}, &Account{}, &Pet{}, &Company{}, &Toy{}, &Language{}, &Tools{}}
 	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(allModels), func(i, j int) { allModels[i], allModels[j] = allModels[j], allModels[i] })
 	DB.Migrator().DropTable("user_speaks", "user_friends", "ccc")
@@ -34,7 +41,7 @@ func TestMigrate(t *testing.T) {
 	if tables, err := DB.Migrator().GetTables(); err != nil {
 		t.Fatalf("Failed to get database all tables, but got error %v", err)
 	} else {
-		for _, t1 := range []string{"users", "accounts", "pets", "companies", "toys", "languages"} {
+		for _, t1 := range []string{"users", "accounts", "pets", "companies", "toys", "languages", "tools"} {
 			hasTable := false
 			for _, t2 := range tables {
 				if t2 == t1 {
@@ -93,7 +100,8 @@ func TestAutoMigrateInt8PG(t *testing.T) {
 		Test: func(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
 			sql, _ := fc()
 			if strings.HasPrefix(sql, "ALTER TABLE \"migrate_ints\" ALTER COLUMN \"int8\" TYPE smallint") {
-				t.Fatalf("shouldn't execute ALTER COLUMN TYPE if such type is already existed in DB schema: sql: %s", sql)
+				t.Fatalf("shouldn't execute ALTER COLUMN TYPE if such type is already existed in DB schema: sql: %s",
+					sql)
 			}
 		},
 	}
@@ -432,40 +440,50 @@ func TestTiDBMigrateColumns(t *testing.T) {
 			switch columnType.Name() {
 			case "id":
 				if v, ok := columnType.PrimaryKey(); !ok || !v {
-					t.Fatalf("column id primary key should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column id primary key should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			case "name":
 				dataType := DB.Dialector.DataTypeOf(stmt.Schema.LookUpField(columnType.Name()))
 				if !strings.Contains(strings.ToUpper(dataType), strings.ToUpper(columnType.DatabaseTypeName())) {
-					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
+					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v",
+						columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
 				}
 				if length, ok := columnType.Length(); !ok || length != 100 {
-					t.Fatalf("column name length should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), length, 100, columnType)
+					t.Fatalf("column name length should be correct, name: %v, length: %v, expects: %v, column: %#v",
+						columnType.Name(), length, 100, columnType)
 				}
 			case "age":
 				if v, ok := columnType.DefaultValue(); !ok || v != "18" {
-					t.Fatalf("column age default value should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column age default value should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 				if v, ok := columnType.Comment(); !ok || v != "my age" {
-					t.Fatalf("column age comment should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column age comment should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			case "code":
 				if v, ok := columnType.Unique(); !ok || !v {
-					t.Fatalf("column code unique should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column code unique should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 				if v, ok := columnType.DefaultValue(); !ok || v != "hello" {
-					t.Fatalf("column code default value should be correct, name: %v, column: %#v, default value: %v", columnType.Name(), columnType, v)
+					t.Fatalf("column code default value should be correct, name: %v, column: %#v, default value: %v",
+						columnType.Name(), columnType, v)
 				}
 				if v, ok := columnType.Comment(); !ok || v != "my code2" {
-					t.Fatalf("column code comment should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column code comment should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			case "code2":
 				// Code2 string `gorm:"comment:my code2;default:hello"`
 				if v, ok := columnType.DefaultValue(); !ok || v != "hello" {
-					t.Fatalf("column code default value should be correct, name: %v, column: %#v, default value: %v", columnType.Name(), columnType, v)
+					t.Fatalf("column code default value should be correct, name: %v, column: %#v, default value: %v",
+						columnType.Name(), columnType, v)
 				}
 				if v, ok := columnType.Comment(); !ok || v != "my code2" {
-					t.Fatalf("column code comment should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column code comment should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			}
 		}
@@ -497,7 +515,8 @@ func TestTiDBMigrateColumns(t *testing.T) {
 		t.Fatalf("Failed to add column, got %v", err)
 	}
 
-	if err := DB.Table("column_structs").Migrator().RenameColumn(&NewColumnStruct{}, "NewName", "new_new_name"); err != nil {
+	if err := DB.Table("column_structs").Migrator().RenameColumn(&NewColumnStruct{}, "NewName",
+		"new_new_name"); err != nil {
 		t.Fatalf("Failed to add column, got %v", err)
 	}
 
@@ -561,36 +580,45 @@ func TestMigrateColumns(t *testing.T) {
 			switch columnType.Name() {
 			case "id":
 				if v, ok := columnType.PrimaryKey(); !ok || !v {
-					t.Fatalf("column id primary key should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column id primary key should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			case "name":
 				dataType := DB.Dialector.DataTypeOf(stmt.Schema.LookUpField(columnType.Name()))
 				if !strings.Contains(strings.ToUpper(dataType), strings.ToUpper(columnType.DatabaseTypeName())) {
-					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
+					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v",
+						columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
 				}
 				if length, ok := columnType.Length(); !sqlite && (!ok || length != 100) {
-					t.Fatalf("column name length should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), length, 100, columnType)
+					t.Fatalf("column name length should be correct, name: %v, length: %v, expects: %v, column: %#v",
+						columnType.Name(), length, 100, columnType)
 				}
 			case "age":
 				if v, ok := columnType.DefaultValue(); !ok || v != "18" {
-					t.Fatalf("column age default value should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column age default value should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 				if v, ok := columnType.Comment(); !sqlite && !sqlserver && (!ok || v != "my age") {
-					t.Fatalf("column age comment should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column age comment should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			case "code":
 				if v, ok := columnType.Unique(); !ok || !v {
-					t.Fatalf("column code unique should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column code unique should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 				if v, ok := columnType.DefaultValue(); !sqlserver && (!ok || v != "hello") {
-					t.Fatalf("column code default value should be correct, name: %v, column: %#v, default value: %v", columnType.Name(), columnType, v)
+					t.Fatalf("column code default value should be correct, name: %v, column: %#v, default value: %v",
+						columnType.Name(), columnType, v)
 				}
 				if v, ok := columnType.Comment(); !sqlite && !sqlserver && (!ok || v != "my code2") {
-					t.Fatalf("column code comment should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column code comment should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			case "code2":
 				if v, ok := columnType.Unique(); !sqlserver && (!ok || !v) {
-					t.Fatalf("column code2 unique should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column code2 unique should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			case "code3":
 				// TODO
@@ -627,7 +655,8 @@ func TestMigrateColumns(t *testing.T) {
 		t.Fatalf("Failed to add column, got %v", err)
 	}
 
-	if err := DB.Table("column_structs").Migrator().RenameColumn(&NewColumnStruct{}, "NewName", "new_new_name"); err != nil {
+	if err := DB.Table("column_structs").Migrator().RenameColumn(&NewColumnStruct{}, "NewName",
+		"new_new_name"); err != nil {
 		t.Fatalf("Failed to add column, got %v", err)
 	}
 
@@ -862,6 +891,48 @@ func TestMigrateWithSpecialName(t *testing.T) {
 	AssertEqual(t, true, DB.Migrator().HasTable("coupon_product_2"))
 }
 
+// https://github.com/go-gorm/gorm/issues/4760
+func TestMigrateAutoIncrement(t *testing.T) {
+	type AutoIncrementStruct struct {
+		ID     int64   `gorm:"primarykey;autoIncrement"`
+		Field1 uint32  `gorm:"column:field1"`
+		Field2 float32 `gorm:"column:field2"`
+	}
+
+	if err := DB.AutoMigrate(&AutoIncrementStruct{}); err != nil {
+		t.Fatalf("AutoMigrate err: %v", err)
+	}
+
+	const ROWS = 10
+	for idx := 0; idx < ROWS; idx++ {
+		if err := DB.Create(&AutoIncrementStruct{}).Error; err != nil {
+			t.Fatalf("create auto_increment_struct fail, err: %v", err)
+		}
+	}
+
+	rows := make([]*AutoIncrementStruct, 0, ROWS)
+	if err := DB.Order("id ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("find auto_increment_struct fail, err: %v", err)
+	}
+
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	lastID := ids[len(ids)-1]
+
+	if err := DB.Where("id IN (?)", ids).Delete(&AutoIncrementStruct{}).Error; err != nil {
+		t.Fatalf("delete auto_increment_struct fail, err: %v", err)
+	}
+
+	newRow := &AutoIncrementStruct{}
+	if err := DB.Create(newRow).Error; err != nil {
+		t.Fatalf("create auto_increment_struct fail, err: %v", err)
+	}
+
+	AssertEqual(t, newRow.ID, lastID+1)
+}
+
 // https://github.com/go-gorm/gorm/issues/5320
 func TestPrimarykeyID(t *testing.T) {
 	if DB.Dialector.Name() != "postgres" {
@@ -920,7 +991,8 @@ func TestCurrentTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AutoMigrate err:%v", err)
 	}
-	AssertEqual(t, true, DB.Migrator().HasIndex(&CurrentTimestampTest{}, "time_at"))
+	AssertEqual(t, true, DB.Migrator().HasConstraint(&CurrentTimestampTest{}, "uni_current_timestamp_tests_time_at"))
+	AssertEqual(t, false, DB.Migrator().HasIndex(&CurrentTimestampTest{}, "time_at"))
 	AssertEqual(t, false, DB.Migrator().HasIndex(&CurrentTimestampTest{}, "time_at_2"))
 }
 
@@ -982,7 +1054,8 @@ func TestUniqueColumn(t *testing.T) {
 	}
 
 	// not trigger alert column
-	AssertEqual(t, true, DB.Migrator().HasIndex(&UniqueTest{}, "name"))
+	AssertEqual(t, true, DB.Migrator().HasConstraint(&UniqueTest{}, "uni_unique_tests_name"))
+	AssertEqual(t, false, DB.Migrator().HasIndex(&UniqueTest{}, "name"))
 	AssertEqual(t, false, DB.Migrator().HasIndex(&UniqueTest{}, "name_1"))
 	AssertEqual(t, false, DB.Migrator().HasIndex(&UniqueTest{}, "name_2"))
 
@@ -1341,14 +1414,14 @@ func TestMigrateSameEmbeddedFieldName(t *testing.T) {
 	err = DB.Table("game_users").AutoMigrate(&GameUser1{})
 	AssertEqual(t, nil, err)
 
-	_, err = findColumnType(&GameUser{}, "stat_ab_ground_destory_count")
+	_, err = findColumnType(&GameUser{}, "stat_ab_ground_destroy_count")
 	AssertEqual(t, nil, err)
 
-	_, err = findColumnType(&GameUser{}, "rate_ground_rb_ground_destory_count")
+	_, err = findColumnType(&GameUser{}, "rate_ground_rb_ground_destroy_count")
 	AssertEqual(t, nil, err)
 }
 
-func TestMigrateDefaultNullString(t *testing.T) {
+func TestMigrateWithDefaultValue(t *testing.T) {
 	if DB.Dialector.Name() == "sqlserver" {
 		// sqlserver driver treats NULL and 'NULL' the same
 		t.Skip("skip sqlserver")
@@ -1362,6 +1435,7 @@ func TestMigrateDefaultNullString(t *testing.T) {
 	type NullStringModel struct {
 		ID      uint
 		Content string `gorm:"default:'null'"`
+		Active  bool   `gorm:"default:false"`
 	}
 
 	tableName := "null_string_model"
@@ -1380,6 +1454,14 @@ func TestMigrateDefaultNullString(t *testing.T) {
 
 	defVal, ok := columnType.DefaultValue()
 	AssertEqual(t, defVal, "null")
+	AssertEqual(t, ok, true)
+
+	columnType2, err := findColumnType(tableName, "active")
+	AssertEqual(t, err, nil)
+
+	defVal, ok = columnType2.DefaultValue()
+	bv, _ := strconv.ParseBool(defVal)
+	AssertEqual(t, bv, false)
 	AssertEqual(t, ok, true)
 
 	// default 'null' -> 'null'
@@ -1513,7 +1595,8 @@ func TestMigrateIgnoreRelations(t *testing.T) {
 func TestMigrateView(t *testing.T) {
 	DB.Save(GetUser("joins-args-db", Config{Pets: 2}))
 
-	if err := DB.Migrator().CreateView("invalid_users_pets", gorm.ViewOption{Query: nil}); err != gorm.ErrSubQueryRequired {
+	if err := DB.Migrator().CreateView("invalid_users_pets",
+		gorm.ViewOption{Query: nil}); err != gorm.ErrSubQueryRequired {
 		t.Fatalf("no view should be created, got %v", err)
 	}
 
@@ -1582,19 +1665,283 @@ func TestMigrateExistingBoolColumnPG(t *testing.T) {
 			switch columnType.Name() {
 			case "id":
 				if v, ok := columnType.PrimaryKey(); !ok || !v {
-					t.Fatalf("column id primary key should be correct, name: %v, column: %#v", columnType.Name(), columnType)
+					t.Fatalf("column id primary key should be correct, name: %v, column: %#v", columnType.Name(),
+						columnType)
 				}
 			case "string_bool":
 				dataType := DB.Dialector.DataTypeOf(stmt.Schema.LookUpField(columnType.Name()))
 				if !strings.Contains(strings.ToUpper(dataType), strings.ToUpper(columnType.DatabaseTypeName())) {
-					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
+					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v",
+						columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
 				}
 			case "smallint_bool":
 				dataType := DB.Dialector.DataTypeOf(stmt.Schema.LookUpField(columnType.Name()))
 				if !strings.Contains(strings.ToUpper(dataType), strings.ToUpper(columnType.DatabaseTypeName())) {
-					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v", columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
+					t.Fatalf("column name type should be correct, name: %v, length: %v, expects: %v, column: %#v",
+						columnType.Name(), columnType.DatabaseTypeName(), dataType, columnType)
 				}
 			}
+		}
+	}
+}
+
+func TestTableType(t *testing.T) {
+	// currently it is only supported for mysql driver
+	if !isMysql() {
+		return
+	}
+
+	const tblName = "cities"
+	const tblSchema = "gorm"
+	const tblType = "BASE TABLE"
+	const tblComment = "foobar comment"
+
+	type City struct {
+		gorm.Model
+		Name string `gorm:"unique"`
+	}
+
+	DB.Migrator().DropTable(&City{})
+
+	if err := DB.Set("gorm:table_options",
+		fmt.Sprintf("ENGINE InnoDB COMMENT '%s'", tblComment)).AutoMigrate(&City{}); err != nil {
+		t.Fatalf("failed to migrate cities tables, got error: %v", err)
+	}
+
+	tableType, err := DB.Table("cities").Migrator().TableType(&City{})
+	if err != nil {
+		t.Fatalf("failed to get table type, got error %v", err)
+	}
+
+	if tableType.Schema() != tblSchema {
+		t.Fatalf("expected tblSchema to be %s but got %s", tblSchema, tableType.Schema())
+	}
+
+	if tableType.Name() != tblName {
+		t.Fatalf("expected table name to be %s but got %s", tblName, tableType.Name())
+	}
+
+	if tableType.Type() != tblType {
+		t.Fatalf("expected table type to be %s but got %s", tblType, tableType.Type())
+	}
+
+	comment, ok := tableType.Comment()
+	if !ok || comment != tblComment {
+		t.Fatalf("expected comment %s got %s", tblComment, comment)
+	}
+}
+
+func TestMigrateWithUniqueIndexAndUnique(t *testing.T) {
+	const table = "unique_struct"
+
+	checkField := func(model interface{}, fieldName string, unique bool, uniqueIndex string) {
+		stmt := &gorm.Statement{DB: DB}
+		err := stmt.Parse(model)
+		if err != nil {
+			t.Fatalf("%v: failed to parse schema, got error: %v", utils.FileWithLineNum(), err)
+		}
+		_ = stmt.Schema.ParseIndexes()
+		field := stmt.Schema.LookUpField(fieldName)
+		if field == nil {
+			t.Fatalf("%v: failed to find column %q", utils.FileWithLineNum(), fieldName)
+		}
+		if field.Unique != unique {
+			t.Fatalf("%v: %q column %q unique should be %v but got %v", utils.FileWithLineNum(), stmt.Schema.Table, fieldName, unique, field.Unique)
+		}
+		if field.UniqueIndex != uniqueIndex {
+			t.Fatalf("%v: %q column %q uniqueIndex should be %v but got %v", utils.FileWithLineNum(), stmt.Schema, fieldName, uniqueIndex, field.UniqueIndex)
+		}
+	}
+
+	type ( // not unique
+		UniqueStruct1 struct {
+			Name string `gorm:"size:10"`
+		}
+		UniqueStruct2 struct {
+			Name string `gorm:"size:20"`
+		}
+	)
+	checkField(&UniqueStruct1{}, "name", false, "")
+	checkField(&UniqueStruct2{}, "name", false, "")
+
+	type ( // unique
+		UniqueStruct3 struct {
+			Name string `gorm:"size:30;unique"`
+		}
+		UniqueStruct4 struct {
+			Name string `gorm:"size:40;unique"`
+		}
+	)
+	checkField(&UniqueStruct3{}, "name", true, "")
+	checkField(&UniqueStruct4{}, "name", true, "")
+
+	type ( // uniqueIndex
+		UniqueStruct5 struct {
+			Name string `gorm:"size:50;uniqueIndex"`
+		}
+		UniqueStruct6 struct {
+			Name string `gorm:"size:60;uniqueIndex"`
+		}
+		UniqueStruct7 struct {
+			Name     string `gorm:"size:70;uniqueIndex:idx_us6_all_names"`
+			NickName string `gorm:"size:70;uniqueIndex:idx_us6_all_names"`
+		}
+	)
+	checkField(&UniqueStruct5{}, "name", false, "idx_unique_struct5_name")
+	checkField(&UniqueStruct6{}, "name", false, "idx_unique_struct6_name")
+
+	checkField(&UniqueStruct7{}, "name", false, "")
+	checkField(&UniqueStruct7{}, "nick_name", false, "")
+	checkField(&UniqueStruct7{}, "nick_name", false, "")
+
+	type UniqueStruct8 struct { // unique and uniqueIndex
+		Name string `gorm:"size:60;unique;index:my_us8_index,unique;"`
+	}
+	checkField(&UniqueStruct8{}, "name", true, "my_us8_index")
+
+	type TestCase struct {
+		name      string
+		from, to  interface{}
+		checkFunc func(t *testing.T)
+	}
+
+	checkColumnType := func(t *testing.T, fieldName string, unique bool) {
+		columnTypes, err := DB.Migrator().ColumnTypes(table)
+		if err != nil {
+			t.Fatalf("%v: failed to get column types, got error: %v", utils.FileWithLineNum(), err)
+		}
+		var found gorm.ColumnType
+		for _, columnType := range columnTypes {
+			if columnType.Name() == fieldName {
+				found = columnType
+			}
+		}
+		if found == nil {
+			t.Fatalf("%v: failed to find column type %q", utils.FileWithLineNum(), fieldName)
+		}
+		if actualUnique, ok := found.Unique(); !ok || actualUnique != unique {
+			t.Fatalf("%v: column %q unique should be %v but got %v", utils.FileWithLineNum(), fieldName, unique, actualUnique)
+		}
+	}
+
+	checkIndex := func(t *testing.T, expected []gorm.Index) {
+		indexes, err := DB.Migrator().GetIndexes(table)
+		if err != nil {
+			t.Fatalf("%v: failed to get indexes, got error: %v", utils.FileWithLineNum(), err)
+		}
+		assert.ElementsMatch(t, expected, indexes)
+	}
+
+	uniqueIndex := &migrator.Index{TableName: table, NameValue: DB.Config.NamingStrategy.IndexName(table, "name"), ColumnList: []string{"name"}, PrimaryKeyValue: sql.NullBool{Bool: false, Valid: true}, UniqueValue: sql.NullBool{Bool: true, Valid: true}}
+	myIndex := &migrator.Index{TableName: table, NameValue: "my_us8_index", ColumnList: []string{"name"}, PrimaryKeyValue: sql.NullBool{Bool: false, Valid: true}, UniqueValue: sql.NullBool{Bool: true, Valid: true}}
+	mulIndex := &migrator.Index{TableName: table, NameValue: "idx_us6_all_names", ColumnList: []string{"name", "nick_name"}, PrimaryKeyValue: sql.NullBool{Bool: false, Valid: true}, UniqueValue: sql.NullBool{Bool: true, Valid: true}}
+
+	var checkNotUnique, checkUnique, checkUniqueIndex, checkMyIndex, checkMulIndex func(t *testing.T)
+	// UniqueAffectedByUniqueIndex is true
+	if DB.Dialector.Name() == "mysql" {
+		uniqueConstraintIndex := &migrator.Index{TableName: table, NameValue: DB.Config.NamingStrategy.UniqueName(table, "name"), ColumnList: []string{"name"}, PrimaryKeyValue: sql.NullBool{Bool: false, Valid: true}, UniqueValue: sql.NullBool{Bool: true, Valid: true}}
+		checkNotUnique = func(t *testing.T) {
+			checkColumnType(t, "name", false)
+			checkIndex(t, nil)
+		}
+		checkUnique = func(t *testing.T) {
+			checkColumnType(t, "name", true)
+			checkIndex(t, []gorm.Index{uniqueConstraintIndex})
+		}
+		checkUniqueIndex = func(t *testing.T) {
+			checkColumnType(t, "name", true)
+			checkIndex(t, []gorm.Index{uniqueIndex})
+		}
+		checkMyIndex = func(t *testing.T) {
+			checkColumnType(t, "name", true)
+			checkIndex(t, []gorm.Index{uniqueConstraintIndex, myIndex})
+		}
+		checkMulIndex = func(t *testing.T) {
+			checkColumnType(t, "name", false)
+			checkColumnType(t, "nick_name", false)
+			checkIndex(t, []gorm.Index{mulIndex})
+		}
+	} else {
+		checkNotUnique = func(t *testing.T) { checkColumnType(t, "name", false) }
+		checkUnique = func(t *testing.T) { checkColumnType(t, "name", true) }
+		checkUniqueIndex = func(t *testing.T) {
+			checkColumnType(t, "name", false)
+			checkIndex(t, []gorm.Index{uniqueIndex})
+		}
+		checkMyIndex = func(t *testing.T) {
+			checkColumnType(t, "name", true)
+			if !DB.Migrator().HasIndex(table, myIndex.Name()) {
+				t.Errorf("%v: should has index %s but not", utils.FileWithLineNum(), myIndex.Name())
+			}
+		}
+		checkMulIndex = func(t *testing.T) {
+			checkColumnType(t, "name", false)
+			checkColumnType(t, "nick_name", false)
+			if !DB.Migrator().HasIndex(table, mulIndex.Name()) {
+				t.Errorf("%v: should has index %s but not", utils.FileWithLineNum(), mulIndex.Name())
+			}
+		}
+	}
+
+	tests := []TestCase{
+		{name: "notUnique to notUnique", from: &UniqueStruct1{}, to: &UniqueStruct2{}, checkFunc: checkNotUnique},
+		{name: "notUnique to unique", from: &UniqueStruct1{}, to: &UniqueStruct3{}, checkFunc: checkUnique},
+		{name: "notUnique to uniqueIndex", from: &UniqueStruct1{}, to: &UniqueStruct5{}, checkFunc: checkUniqueIndex},
+		{name: "notUnique to uniqueAndUniqueIndex", from: &UniqueStruct1{}, to: &UniqueStruct8{}, checkFunc: checkMyIndex},
+		{name: "unique to unique", from: &UniqueStruct3{}, to: &UniqueStruct4{}, checkFunc: checkUnique},
+		{name: "unique to uniqueIndex", from: &UniqueStruct3{}, to: &UniqueStruct5{}, checkFunc: checkUniqueIndex},
+		{name: "unique to uniqueAndUniqueIndex", from: &UniqueStruct3{}, to: &UniqueStruct8{}, checkFunc: checkMyIndex},
+		{name: "uniqueIndex to uniqueIndex", from: &UniqueStruct5{}, to: &UniqueStruct6{}, checkFunc: checkUniqueIndex},
+		{name: "uniqueIndex to uniqueAndUniqueIndex", from: &UniqueStruct5{}, to: &UniqueStruct8{}, checkFunc: checkMyIndex},
+		{name: "uniqueIndex to multi uniqueIndex", from: &UniqueStruct5{}, to: &UniqueStruct7{}, checkFunc: checkMulIndex},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := DB.Migrator().DropTable(table); err != nil {
+				t.Fatalf("failed to drop table, got error: %v", err)
+			}
+			if err := DB.Table(table).AutoMigrate(test.from); err != nil {
+				t.Fatalf("failed to migrate table, got error: %v", err)
+			}
+			if err := DB.Table(table).AutoMigrate(test.to); err != nil {
+				t.Fatalf("failed to migrate table, got error: %v", err)
+			}
+			test.checkFunc(t)
+		})
+	}
+
+	if DB.Dialector.Name() != "sqlserver" {
+		// In SQLServer, If an index or constraint depends on the column,
+		// this column will not be able to run ALTER
+		// see https://stackoverflow.com/questions/19460912/the-object-df-is-dependent-on-column-changing-int-to-double/19461205#19461205
+		// may we need to create another PR to fix it, see https://github.com/go-gorm/sqlserver/pull/106
+		tests = []TestCase{
+			{name: "unique to notUnique", from: &UniqueStruct3{}, to: &UniqueStruct1{}, checkFunc: checkNotUnique},
+			{name: "uniqueIndex to notUnique", from: &UniqueStruct5{}, to: &UniqueStruct2{}, checkFunc: checkNotUnique},
+			{name: "uniqueIndex to unique", from: &UniqueStruct5{}, to: &UniqueStruct3{}, checkFunc: checkUnique},
+		}
+	}
+
+	if DB.Dialector.Name() == "mysql" {
+		compatibilityTests := []TestCase{
+			{name: "oldUnique to notUnique", to: UniqueStruct1{}, checkFunc: checkNotUnique},
+			{name: "oldUnique to unique", to: UniqueStruct3{}, checkFunc: checkUnique},
+			{name: "oldUnique to uniqueIndex", to: UniqueStruct5{}, checkFunc: checkUniqueIndex},
+			{name: "oldUnique to uniqueAndUniqueIndex", to: UniqueStruct8{}, checkFunc: checkMyIndex},
+		}
+		for _, test := range compatibilityTests {
+			t.Run(test.name, func(t *testing.T) {
+				if err := DB.Migrator().DropTable(table); err != nil {
+					t.Fatalf("failed to drop table, got error: %v", err)
+				}
+				if err := DB.Exec("CREATE TABLE ? (`name` varchar(10) UNIQUE)", clause.Table{Name: table}).Error; err != nil {
+					t.Fatalf("failed to create table, got error: %v", err)
+				}
+				if err := DB.Table(table).AutoMigrate(test.to); err != nil {
+					t.Fatalf("failed to migrate table, got error: %v", err)
+				}
+				test.checkFunc(t)
+			})
 		}
 	}
 }

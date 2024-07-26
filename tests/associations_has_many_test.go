@@ -422,7 +422,7 @@ func TestPolymorphicHasManyAssociation(t *testing.T) {
 func TestPolymorphicHasManyAssociationForSlice(t *testing.T) {
 	users := []User{
 		*GetUser("slice-hasmany-1", Config{Toys: 2}),
-		*GetUser("slice-hasmany-2", Config{Toys: 0}),
+		*GetUser("slice-hasmany-2", Config{Toys: 0, Tools: 2}),
 		*GetUser("slice-hasmany-3", Config{Toys: 4}),
 	}
 
@@ -430,11 +430,20 @@ func TestPolymorphicHasManyAssociationForSlice(t *testing.T) {
 
 	// Count
 	AssertAssociationCount(t, users, "Toys", 6, "")
+	AssertAssociationCount(t, users, "Tools", 2, "")
 
 	// Find
 	var toys []Toy
 	if DB.Model(&users).Association("Toys").Find(&toys); len(toys) != 6 {
 		t.Errorf("toys count should be %v, but got %v", 6, len(toys))
+	}
+
+	// Find Tools (polymorphic with custom type and id)
+	var tools []Tools
+	DB.Model(&users).Association("Tools").Find(&tools)
+
+	if len(tools) != 2 {
+		t.Errorf("tools count should be %v, but got %v", 2, len(tools))
 	}
 
 	// Append
@@ -543,5 +552,17 @@ func TestHasManyAssociationUnscoped(t *testing.T) {
 	}
 	if len(contents) != 0 {
 		t.Errorf("expected %d contents, got %d", 0, len(contents))
+	}
+}
+
+func TestHasManyAssociationReplaceWithNonValidValue(t *testing.T) {
+	user := User{Name: "jinzhu", Languages: []Language{{Name: "EN"}}}
+
+	if err := DB.Create(&user).Error; err != nil {
+		t.Fatalf("errors happened when create: %v", err)
+	}
+
+	if err := DB.Model(&user).Association("Languages").Replace(Language{Name: "DE"}, Language{Name: "FR"}); err == nil {
+		t.Error("expected association error to be not nil")
 	}
 }
