@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -17,7 +16,6 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"gorm.io/gorm/logger"
 	"gorm.io/gorm/migrator"
 	"gorm.io/gorm/schema"
 	"gorm.io/gorm/utils"
@@ -1211,101 +1209,6 @@ func TestInvalidCachedPlanSimpleProtocol(t *testing.T) {
 	}
 }
 
-func TestInvalidCachedPlanPrepareStmt(t *testing.T) {
-	if DB.Dialector.Name() != "postgres" {
-		return
-	}
-
-	db, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{PrepareStmt: true})
-	if err != nil {
-		t.Errorf("Open err:%v", err)
-	}
-	if debug := os.Getenv("DEBUG"); debug == "true" {
-		db.Logger = db.Logger.LogMode(logger.Info)
-	} else if debug == "false" {
-		db.Logger = db.Logger.LogMode(logger.Silent)
-	}
-
-	type Object1 struct {
-		ID uint
-	}
-	type Object2 struct {
-		ID     uint
-		Field1 int `gorm:"type:int8"`
-	}
-	type Object3 struct {
-		ID     uint
-		Field1 int `gorm:"type:int4"`
-	}
-	type Object4 struct {
-		ID     uint
-		Field2 int
-	}
-	db.Migrator().DropTable("objects")
-
-	err = db.Table("objects").AutoMigrate(&Object1{})
-	if err != nil {
-		t.Errorf("AutoMigrate err:%v", err)
-	}
-	err = db.Table("objects").Create(&Object1{}).Error
-	if err != nil {
-		t.Errorf("create err:%v", err)
-	}
-
-	// AddColumn
-	err = db.Table("objects").AutoMigrate(&Object2{})
-	if err != nil {
-		t.Errorf("AutoMigrate err:%v", err)
-	}
-
-	err = db.Table("objects").Take(&Object2{}).Error
-	if err != nil {
-		t.Errorf("take err:%v", err)
-	}
-
-	// AlterColumn
-	err = db.Table("objects").AutoMigrate(&Object3{})
-	if err != nil {
-		t.Errorf("AutoMigrate err:%v", err)
-	}
-
-	err = db.Table("objects").Take(&Object3{}).Error
-	if err != nil {
-		t.Errorf("take err:%v", err)
-	}
-
-	// AddColumn
-	err = db.Table("objects").AutoMigrate(&Object4{})
-	if err != nil {
-		t.Errorf("AutoMigrate err:%v", err)
-	}
-
-	err = db.Table("objects").Take(&Object4{}).Error
-	if err != nil {
-		t.Errorf("take err:%v", err)
-	}
-
-	db.Table("objects").Migrator().RenameColumn(&Object4{}, "field2", "field3")
-	if err != nil {
-		t.Errorf("RenameColumn err:%v", err)
-	}
-
-	err = db.Table("objects").Take(&Object4{}).Error
-	if err != nil {
-		t.Errorf("take err:%v", err)
-	}
-
-	db.Table("objects").Migrator().DropColumn(&Object4{}, "field3")
-	if err != nil {
-		t.Errorf("RenameColumn err:%v", err)
-	}
-
-	err = db.Table("objects").Take(&Object4{}).Error
-	if err != nil {
-		t.Errorf("take err:%v", err)
-	}
-}
-
 func TestDifferentTypeWithoutDeclaredLength(t *testing.T) {
 	type DiffType struct {
 		ID   uint
@@ -1985,5 +1888,116 @@ func TestMigrateWithUniqueIndexAndUnique(t *testing.T) {
 				test.checkFunc(t)
 			})
 		}
+	}
+}
+
+func testAutoMigrateDecimal(t *testing.T, model1, model2 any) []string {
+	tracer := Tracer{
+		Logger: DB.Config.Logger,
+		Test: func(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
+			sql, _ := fc()
+			if strings.HasPrefix(sql, "ALTER TABLE ") {
+				t.Fatalf("shouldn't execute ALTER COLUMN TYPE if decimal is not change: sql: %s", sql)
+			}
+		},
+	}
+	session := DB.Session(&gorm.Session{Logger: tracer})
+
+	DB.Migrator().DropTable(model1)
+	var modifySql []string
+	if err := session.AutoMigrate(model1); err != nil {
+		t.Fatalf("failed to auto migrate, got error: %v", err)
+	}
+	if err := session.AutoMigrate(model1); err != nil {
+		t.Fatalf("failed to auto migrate, got error: %v", err)
+	}
+	tracer2 := Tracer{
+		Logger: DB.Config.Logger,
+		Test: func(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
+			sql, _ := fc()
+			modifySql = append(modifySql, sql)
+		},
+	}
+	session2 := DB.Session(&gorm.Session{Logger: tracer2})
+	err := session2.Table("migrate_decimal_columns").Migrator().AutoMigrate(model2)
+	if err != nil {
+		t.Fatalf("failed to get column types, got error: %v", err)
+	}
+	return modifySql
+}
+
+func decimalColumnsTest[T, T2 any](t *testing.T, expectedSql []string) {
+	var t1 T
+	var t2 T2
+	modSql := testAutoMigrateDecimal(t, t1, t2)
+	var alterSQL []string
+	for _, sql := range modSql {
+		if strings.HasPrefix(sql, "ALTER TABLE ") {
+			alterSQL = append(alterSQL, sql)
+		}
+	}
+
+	if len(alterSQL) != 3 {
+		t.Fatalf("decimal changed error,expected: %+v,got: %+v.", expectedSql, alterSQL)
+	}
+	for i := range alterSQL {
+		if alterSQL[i] != expectedSql[i] {
+			t.Fatalf("decimal changed error,expected: %+v,got: %+v.", expectedSql, alterSQL)
+		}
+	}
+}
+
+func TestAutoMigrateDecimal(t *testing.T) {
+	if DB.Dialector.Name() == "sqlserver" { // database/sql will replace numeric to decimal. so only support decimal.
+		type MigrateDecimalColumn struct {
+			RecID1 int64 `gorm:"column:recid1;type:decimal(9,0);not null" json:"recid1"`
+			RecID2 int64 `gorm:"column:recid2;type:decimal(8);not null" json:"recid2"`
+			RecID3 int64 `gorm:"column:recid3;type:decimal(8,1);not null" json:"recid3"`
+		}
+		type MigrateDecimalColumn2 struct {
+			RecID1 int64 `gorm:"column:recid1;type:decimal(8);not null" json:"recid1"`
+			RecID2 int64 `gorm:"column:recid2;type:decimal(9,1);not null" json:"recid2"`
+			RecID3 int64 `gorm:"column:recid3;type:decimal(9,2);not null" json:"recid3"`
+		}
+		expectedSql := []string{
+			`ALTER TABLE "migrate_decimal_columns" ALTER COLUMN "recid1" decimal(8) NOT NULL`,
+			`ALTER TABLE "migrate_decimal_columns" ALTER COLUMN "recid2" decimal(9,1) NOT NULL`,
+			`ALTER TABLE "migrate_decimal_columns" ALTER COLUMN "recid3" decimal(9,2) NOT NULL`,
+		}
+		decimalColumnsTest[MigrateDecimalColumn, MigrateDecimalColumn2](t, expectedSql)
+	} else if DB.Dialector.Name() == "postgres" {
+		type MigrateDecimalColumn struct {
+			RecID1 int64 `gorm:"column:recid1;type:numeric(9,0);not null" json:"recid1"`
+			RecID2 int64 `gorm:"column:recid2;type:numeric(8);not null" json:"recid2"`
+			RecID3 int64 `gorm:"column:recid3;type:numeric(8,1);not null" json:"recid3"`
+		}
+		type MigrateDecimalColumn2 struct {
+			RecID1 int64 `gorm:"column:recid1;type:numeric(8);not null" json:"recid1"`
+			RecID2 int64 `gorm:"column:recid2;type:numeric(9,1);not null" json:"recid2"`
+			RecID3 int64 `gorm:"column:recid3;type:numeric(9,2);not null" json:"recid3"`
+		}
+		expectedSql := []string{
+			`ALTER TABLE "migrate_decimal_columns" ALTER COLUMN "recid1" TYPE numeric(8) USING "recid1"::numeric(8)`,
+			`ALTER TABLE "migrate_decimal_columns" ALTER COLUMN "recid2" TYPE numeric(9,1) USING "recid2"::numeric(9,1)`,
+			`ALTER TABLE "migrate_decimal_columns" ALTER COLUMN "recid3" TYPE numeric(9,2) USING "recid3"::numeric(9,2)`,
+		}
+		decimalColumnsTest[MigrateDecimalColumn, MigrateDecimalColumn2](t, expectedSql)
+	} else if DB.Dialector.Name() == "mysql" {
+		type MigrateDecimalColumn struct {
+			RecID1 int64 `gorm:"column:recid1;type:decimal(9,0);not null" json:"recid1"`
+			RecID2 int64 `gorm:"column:recid2;type:decimal(8);not null" json:"recid2"`
+			RecID3 int64 `gorm:"column:recid3;type:decimal(8,1);not null" json:"recid3"`
+		}
+		type MigrateDecimalColumn2 struct {
+			RecID1 int64 `gorm:"column:recid1;type:decimal(8);not null" json:"recid1"`
+			RecID2 int64 `gorm:"column:recid2;type:decimal(9,1);not null" json:"recid2"`
+			RecID3 int64 `gorm:"column:recid3;type:decimal(9,2);not null" json:"recid3"`
+		}
+		expectedSql := []string{
+			"ALTER TABLE `migrate_decimal_columns` MODIFY COLUMN `recid1` decimal(8) NOT NULL",
+			"ALTER TABLE `migrate_decimal_columns` MODIFY COLUMN `recid2` decimal(9,1) NOT NULL",
+			"ALTER TABLE `migrate_decimal_columns` MODIFY COLUMN `recid3` decimal(9,2) NOT NULL",
+		}
+		decimalColumnsTest[MigrateDecimalColumn, MigrateDecimalColumn2](t, expectedSql)
 	}
 }

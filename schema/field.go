@@ -318,9 +318,10 @@ func (schema *Schema) ParseField(fieldStruct reflect.StructField) *Field {
 	}
 
 	if val, ok := field.TagSettings["TYPE"]; ok {
-		switch DataType(strings.ToLower(val)) {
+		lowerVal := DataType(strings.ToLower(val))
+		switch lowerVal {
 		case Bool, Int, Uint, Float, String, Time, Bytes:
-			field.DataType = DataType(strings.ToLower(val))
+			field.DataType = lowerVal
 		default:
 			field.DataType = DataType(val)
 		}
@@ -454,9 +455,9 @@ func (field *Field) setupValuerAndSetter() {
 	// ValueOf returns field's value and if it is zero
 	fieldIndex := field.StructField.Index[0]
 	switch {
-	case len(field.StructField.Index) == 1 && fieldIndex > 0:
+	case len(field.StructField.Index) == 1 && fieldIndex >= 0:
 		field.ValueOf = func(ctx context.Context, value reflect.Value) (interface{}, bool) {
-			fieldValue := reflect.Indirect(value).Field(fieldIndex)
+			fieldValue := reflect.Indirect(value).FieldByName(field.Name)
 			return fieldValue.Interface(), fieldValue.IsZero()
 		}
 	default:
@@ -503,7 +504,7 @@ func (field *Field) setupValuerAndSetter() {
 
 	// ReflectValueOf returns field's reflect value
 	switch {
-	case len(field.StructField.Index) == 1 && fieldIndex > 0:
+	case len(field.StructField.Index) == 1 && fieldIndex >= 0:
 		field.ReflectValueOf = func(ctx context.Context, value reflect.Value) reflect.Value {
 			return reflect.Indirect(value).Field(fieldIndex)
 		}
@@ -996,6 +997,6 @@ func (field *Field) setupNewValuePool() {
 	}
 
 	if field.NewValuePool == nil {
-		field.NewValuePool = poolInitializer(reflect.PtrTo(field.IndirectFieldType))
+		field.NewValuePool = poolInitializer(reflect.PointerTo(field.IndirectFieldType))
 	}
 }
