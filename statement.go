@@ -291,8 +291,7 @@ func (stmt *Statement) buildDjangoLikeConds(curTable, key string, v interface{},
 	field := sps[0]
 	op := sps[1]
 
-	stmt.Table = curTable
-	column := clause.Column{Name: key, Table: curTable}
+	column := clause.Column{Name: field, Table: curTable}
 
 	conds := make([]clause.Expression, 0)
 	switch op {
