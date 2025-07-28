@@ -309,7 +309,7 @@ func (stmt *Statement) buildDjangoLikeConds(curTable, key string, v interface{},
 	case "equal", "gt", "gte", "lt", "lte", "ne", "not":
 		opm := "="
 		switch op {
-		case "", "equal":
+		case "equal":
 		case "gt":
 			opm = ">"
 		case "gte":
