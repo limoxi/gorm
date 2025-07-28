@@ -292,6 +292,10 @@ func (stmt *Statement) buildDjangoLikeConds(curTable, key string, v interface{},
 	op := sps[1]
 
 	column := clause.Column{Name: field, Table: curTable}
+	sps2 := strings.Split(key, ".")
+	if len(sps2) == 2 {
+		column = clause.Column{Name: sps2[1], Table: sps2[0]}
+	}
 
 	conds := make([]clause.Expression, 0)
 	switch op {
@@ -443,6 +447,10 @@ func (stmt *Statement) BuildCondition(query interface{}, args ...interface{}) []
 				}
 
 				column := clause.Column{Name: key, Table: curTable}
+				sps := strings.Split(key, ".")
+				if len(sps) == 2 {
+					column = clause.Column{Name: sps[1], Table: sps[0]}
+				}
 				switch reflectValue.Kind() {
 				case reflect.Slice, reflect.Array:
 					if _, ok := v[key].(driver.Valuer); ok {
