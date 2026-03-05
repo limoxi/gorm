@@ -23,6 +23,7 @@ type Config struct {
 	// You can disable it by setting `SkipDefaultTransaction` to true
 	SkipDefaultTransaction    bool
 	DefaultTransactionTimeout time.Duration
+	DefaultContextTimeout     time.Duration
 
 	// NamingStrategy tables, columns naming strategy
 	NamingStrategy schema.Namer
@@ -235,6 +236,11 @@ func Open(dialector Dialector, opts ...Option) (db *DB, err error) {
 	if err == nil && !config.DisableAutomaticPing {
 		if pinger, ok := db.ConnPool.(interface{ Ping() error }); ok {
 			err = pinger.Ping()
+			if err != nil {
+				if db, _ := db.DB(); db != nil {
+					_ = db.Close()
+				}
+			}
 		}
 	}
 

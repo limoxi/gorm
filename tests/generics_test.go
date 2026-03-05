@@ -69,6 +69,36 @@ func TestGenericsCreate(t *testing.T) {
 	if v := mapResult["user_name"]; fmt.Sprint(v) != user.Name {
 		t.Errorf("failed to find map results, got %v, err %v", mapResult, err)
 	}
+
+	selectOnly := User{Name: "GenericsCreateSelectOnly", Age: 99}
+	if err := gorm.G[User](DB).Select("name").Create(ctx, &selectOnly); err != nil {
+		t.Fatalf("failed to create with Select, got error: %v", err)
+	}
+
+	if selectOnly.ID == 0 {
+		t.Fatalf("no primary key found for select-only user: %v", selectOnly)
+	}
+
+	if stored, err := gorm.G[User](DB).Where("id = ?", selectOnly.ID).First(ctx); err != nil {
+		t.Fatalf("failed to reload select-only user, got error: %v", err)
+	} else if stored.Name != selectOnly.Name || stored.Age != 0 {
+		t.Errorf("unexpected select-only user state, got %#v", stored)
+	}
+
+	omitAge := User{Name: "GenericsCreateOmitAge", Age: 88}
+	if err := gorm.G[User](DB).Omit("age").Create(ctx, &omitAge); err != nil {
+		t.Fatalf("failed to create with Omit, got error: %v", err)
+	}
+
+	if omitAge.ID == 0 {
+		t.Fatalf("no primary key found for omit-age user: %v", omitAge)
+	}
+
+	if stored, err := gorm.G[User](DB).Where("id = ?", omitAge.ID).First(ctx); err != nil {
+		t.Fatalf("failed to reload omit-age user, got error: %v", err)
+	} else if stored.Name != omitAge.Name || stored.Age != 0 {
+		t.Errorf("unexpected omit-age user state, got %#v", stored)
+	}
 }
 
 func TestGenericsCreateInBatches(t *testing.T) {
@@ -121,6 +151,11 @@ func TestGenericsExecAndUpdate(t *testing.T) {
 		t.Fatalf("Exec insert failed: %v", err)
 	}
 
+	name2 := "GenericsExec2"
+	if err := gorm.G[User](DB).Exec(ctx, "INSERT INTO ?(name) VALUES(?)", clause.Table{Name: clause.CurrentTable}, name2); err != nil {
+		t.Fatalf("Exec insert failed: %v", err)
+	}
+
 	u, err := gorm.G[User](DB).Table("users as u").Where("u.name = ?", name).First(ctx)
 	if err != nil {
 		t.Fatalf("failed to find user, got error: %v", err)
@@ -162,29 +197,70 @@ func TestGenericsRow(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	row := gorm.G[User](DB).Raw("SELECT name FROM users WHERE id = ?", user.ID).Row(ctx)
+	rawSQLUserRow := gorm.G[User](DB).Raw("SELECT name FROM ? WHERE id = ?", clause.Table{Name: clause.CurrentTable}, user.ID).Row(ctx)
 	var name string
-	if err := row.Scan(&name); err != nil {
-		t.Fatalf("Row scan failed: %v", err)
+	if err := rawSQLUserRow.Scan(&name); err != nil {
+		t.Fatalf("rawSQLUserRow scan failed: %v", err)
 	}
 	if name != user.Name {
 		t.Errorf("expected %s, got %s", user.Name, name)
+	}
+
+	var scannedUserName string
+	selectUserRow := gorm.G[User](DB).Select("name").Where("name = ?", user.Name).Row(ctx)
+	if err := selectUserRow.Scan(&scannedUserName); err != nil {
+		t.Fatalf("selectUserRow scan failed: %v", err)
+	}
+	if name != user.Name {
+		t.Errorf("expected %s, got %s", user.Name, scannedUserName)
 	}
 
 	user2 := User{Name: "GenericsRow2"}
 	if err := gorm.G[User](DB).Create(ctx, &user2); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	rows, err := gorm.G[User](DB).Raw("SELECT name FROM users WHERE id IN ?", []uint{user.ID, user2.ID}).Rows(ctx)
+	rawSQLUserRows, err := gorm.G[User](DB).Raw("SELECT name FROM users WHERE id IN ?", []uint{user.ID, user2.ID}).Rows(ctx)
 	if err != nil {
-		t.Fatalf("Rows failed: %v", err)
+		t.Fatalf("rawSQLUserRows failed: %v", err)
 	}
 
 	count := 0
-	for rows.Next() {
+	for rawSQLUserRows.Next() {
 		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("rows.Scan failed: %v", err)
+		if err := rawSQLUserRows.Scan(&name); err != nil {
+			t.Fatalf("rawSQLUserRows.Scan failed: %v", err)
+		}
+		count++
+	}
+	if count != 2 {
+		t.Errorf("expected 2 rows, got %d", count)
+	}
+
+	selectNameUserRows, err := gorm.G[User](DB).Select("name").Where("id IN ?", []uint{user.ID, user2.ID}).Rows(ctx)
+	if err != nil {
+		t.Fatalf("selectNameUserRows failed: %v", err)
+	}
+	count = 0
+	for selectNameUserRows.Next() {
+		var name string
+		if err := selectNameUserRows.Scan(&name); err != nil {
+			t.Fatalf("selectNameUserRows.Scan failed: %v", err)
+		}
+		count++
+	}
+	if count != 2 {
+		t.Errorf("expected 2 rows, got %d", count)
+	}
+
+	fullUserRows, err := gorm.G[User](DB).Where("id IN ?", []uint{user.ID, user2.ID}).Rows(ctx)
+	if err != nil {
+		t.Fatalf("Rows failed: %v", err)
+	}
+	count = 0
+	for fullUserRows.Next() {
+		var scannedUser User
+		if err := DB.ScanRows(fullUserRows, &scannedUser); err != nil {
+			t.Fatalf("DB.ScanRows failed: %v", err)
 		}
 		count++
 	}
@@ -662,6 +738,64 @@ func TestGenericsDistinct(t *testing.T) {
 	}
 }
 
+func TestGenericsSetCreate(t *testing.T) {
+	ctx := context.Background()
+
+	name := "GenericsSetCreate"
+	age := uint(21)
+
+	err := gorm.G[User](DB).Set(
+		clause.Assignment{Column: clause.Column{Name: "name"}, Value: name},
+		clause.Assignment{Column: clause.Column{Name: "age"}, Value: age},
+	).Create(ctx)
+	if err != nil {
+		t.Fatalf("Set Create failed: %v", err)
+	}
+
+	u, err := gorm.G[User](DB).Where("name = ?", name).First(ctx)
+	if err != nil {
+		t.Fatalf("failed to find created user: %v", err)
+	}
+	if u.ID == 0 || u.Name != name || u.Age != age {
+		t.Fatalf("created user mismatch, got %+v", u)
+	}
+}
+
+func TestGenericsSetUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	// prepare
+	u := User{Name: "GenericsSetUpdate_Before", Age: 30}
+	if err := gorm.G[User](DB).Create(ctx, &u); err != nil {
+		t.Fatalf("prepare user failed: %v", err)
+	}
+
+	// update with Set after chain
+	newName := "GenericsSetUpdate_After"
+	newAge := uint(31)
+	rows, err := gorm.G[User](DB).
+		Where("id = ?", u.ID).
+		Set(
+			clause.Assignment{Column: clause.Column{Name: "name"}, Value: newName},
+			clause.Assignment{Column: clause.Column{Name: "age"}, Value: newAge},
+		).
+		Update(ctx)
+	if err != nil {
+		t.Fatalf("Set Update failed: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("expected 1 row affected, got %d", rows)
+	}
+
+	nu, err := gorm.G[User](DB).Where("id = ?", u.ID).First(ctx)
+	if err != nil {
+		t.Fatalf("failed to query updated user: %v", err)
+	}
+	if nu.Name != newName || nu.Age != newAge {
+		t.Fatalf("updated user mismatch, got %+v", nu)
+	}
+}
+
 func TestGenericsGroupHaving(t *testing.T) {
 	ctx := context.Background()
 
@@ -871,5 +1005,115 @@ func TestGenericsScanUUID(t *testing.T) {
 
 	if userIds[0].String() != users[0].Name || userIds[1].String() != users[1].Name || userIds[2].String() != users[2].Name {
 		t.Fatalf("wrong uuid scanned")
+	}
+}
+
+func TestGenericsCount(t *testing.T) {
+	ctx := context.Background()
+
+	// Just test that the API can be called
+	_, err := gorm.G[User](DB).Count(ctx, "*")
+	if err != nil {
+		t.Fatalf("Count failed: %v", err)
+	}
+}
+
+func TestGenericsUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	// Just test that the API can be called
+	_, err := gorm.G[User](DB).Where("id = ?", 1).Update(ctx, "name", "test")
+	if err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+}
+
+func TestGenericsUpdates(t *testing.T) {
+	ctx := context.Background()
+
+	// Just test that the API can be called
+	_, err := gorm.G[User](DB).Where("id = ?", 1).Updates(ctx, User{Name: "test"})
+	if err != nil {
+		t.Fatalf("Updates failed: %v", err)
+	}
+}
+
+func TestGenericsDeleteAPI(t *testing.T) {
+	ctx := context.Background()
+
+	// Just test that the API can be called
+	_, err := gorm.G[User](DB).Where("id = ?", 1).Delete(ctx)
+	if err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+}
+
+func TestGenericsAssociation(t *testing.T) {
+	// Test basic Association creation
+	assoc := clause.Association{
+		Association: "Orders",
+		Type:        clause.OpCreate,
+		Set: []clause.Assignment{
+			{Column: clause.Column{Name: "amount"}, Value: 100},
+			{Column: clause.Column{Name: "state"}, Value: "new"},
+		},
+	}
+
+	// Verify it implements Assigner interface
+	assignments := assoc.Assignments()
+	if len(assignments) != 0 {
+		t.Errorf("Association.Assignments() should return empty slice, got %v", assignments)
+	}
+
+	// Verify it implements AssociationAssigner interface
+	assocAssignments := assoc.AssociationAssignments()
+	if len(assocAssignments) != 1 {
+		t.Errorf("Association.AssociationAssignments() should return slice with one element, got %v", assocAssignments)
+	}
+
+	if assocAssignments[0].Association != "Orders" {
+		t.Errorf("Association.AssociationAssignments()[0].Association should be 'Orders', got %v", assocAssignments[0].Association)
+	}
+
+	// Test different association operation types
+	operations := []struct {
+		Type     clause.AssociationOpType
+		TypeName string
+	}{
+		{clause.OpUnlink, "OpUnlink"},
+		{clause.OpDelete, "OpDelete"},
+		{clause.OpUpdate, "OpUpdate"},
+		{clause.OpCreate, "OpCreate"},
+	}
+
+	for _, op := range operations {
+		assoc := clause.Association{
+			Association: "Orders",
+			Type:        op.Type,
+		}
+
+		if assoc.Type != op.Type {
+			t.Errorf("Association type should be %s, got %v", op.TypeName, assoc.Type)
+		}
+	}
+}
+
+func TestGenericsAssociationSlice(t *testing.T) {
+	// Test that a slice of Association can be used
+	associations := []clause.Association{
+		{Association: "Orders", Type: clause.OpDelete},
+		{Association: "Profiles", Type: clause.OpUpdate},
+	}
+
+	// In practice, each Association would be processed individually
+	// since []clause.Association doesn't implement AssociationAssigner directly
+	for i, assoc := range associations {
+		assigns := assoc.AssociationAssignments()
+		if len(assigns) != 1 {
+			t.Errorf("Association %d should return one assignment, got %v", i, len(assigns))
+		}
+		if assigns[0].Association != assoc.Association {
+			t.Errorf("Association %d name should be %s, got %v", i, assoc.Association, assigns[0].Association)
+		}
 	}
 }
