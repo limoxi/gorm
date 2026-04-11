@@ -345,6 +345,44 @@ func (db *DB) Order(value interface{}) (tx *DB) {
 	return
 }
 
+// parseOrderFields 转换排序字段
+// -id => id desc
+// +id => id
+func (db *DB) parseOrderFields(fields []string) []string {
+	result := make([]string, 0)
+	for _, field := range fields {
+		if strings.HasPrefix(field, "-") {
+			result = append(result, strings.Split(field, "-")[1]+" desc")
+		} else {
+			if strings.HasPrefix(field, "+") {
+				field = strings.Split(field, "+")[1]
+			}
+			result = append(result, field)
+		}
+	}
+	return result
+}
+
+func (db *DB) OrderBy(value interface{}) (tx *DB) {
+	parsedFields := make([]string, 0)
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			break
+		}
+		parsedFields = db.parseOrderFields(strings.Split(v, ","))
+	case []string:
+		parsedFields = db.parseOrderFields(v)
+	}
+
+	if len(parsedFields) > 0 {
+		unitedField := strings.Join(parsedFields, ", ")
+		return db.Order(unitedField)
+	}
+
+	return db.Order(value)
+}
+
 // Limit specify the number of records to be retrieved
 //
 // Limit conditions can be cancelled by using `Limit(-1)`.
